@@ -1,5 +1,6 @@
 export(fit_multiview_parallel_zentangler)
 export(gen_simmba)
+export(run_intersim_zentangler)
 export(trigger_InterSIM)
 importFrom(stats,binomial)
 importFrom(stats,as.formula)

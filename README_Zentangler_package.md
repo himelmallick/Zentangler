@@ -242,4 +242,5 @@ Common columns include:
 
 - `fit_multiview_parallel_zentangler()`: fit the multiview parallel mediation model
 - `gen_simmba()`: generate MAE simulation data with mediation truth
+- `run_intersim_zentangler()`: run InterSIM/SIMMBA simulation benchmarks across fusion modes
 - `trigger_InterSIM()`: generate the null InterSIM data object used by the simulator
