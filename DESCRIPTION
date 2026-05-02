@@ -11,7 +11,7 @@ Author: Nalin Arora [aut],
     Himel Mallick [aut, cre, cph] (ORCID:
     <https://orcid.org/0000-0003-4956-2429>)
 Maintainer: Himel Mallick <him4004@med.cornell.edu>
-Description: Provides MAE-first tools for generic multi-view parallel mediation analysis. Zentangler screens exposure-associated mediators within each assay view, fits selected mediators jointly using early, intermediate, or late fusion, and ranks candidate mediators using a-path and b-path evidence. The package also includes MultiAssayExperiment simulation utilities for method development.
+Description: Provides MAE-first tools for generic multi-view parallel mediation analysis. Zentangler estimates exposure-associated mediator paths within each assay view, optionally screens candidate mediators, fits retained mediators jointly using early, intermediate, or late fusion, and ranks candidate mediators using a-path and b-path evidence. The package also includes MultiAssayExperiment simulation utilities for method development.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

@@ -12,6 +12,7 @@ fit_multiview_parallel_zentangler(
   residualize = FALSE,
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none"),
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
@@ -40,6 +41,7 @@ fit_multiview_parallel_zentangler(
 \item{residualize}{Logical. If \code{TRUE}, residualize exposure, outcome, and mediators against covariates before fitting.}
 \item{sis_n}{Number of mediators to retain per view after screening. If \code{NULL}, a HIMA-style default is used.}
 \item{sis_rank}{Screening rank criterion: absolute a-path estimate or a-path p-value.}
+\item{screen_method}{Mediator screening method. \code{"sis"} keeps the top \code{sis_n} mediators per view; \code{"none"} keeps all mediators that survive numeric and variance filtering.}
 \item{fusion_mode}{Y-stage fusion mode: early, intermediate, or late.}
 \item{y_family}{Outcome family: Gaussian or binomial. Intermediate cooperative fusion currently supports Gaussian outcomes.}
 \item{lambda_choice}{Cross-validated glmnet lambda choice.}
@@ -63,8 +65,8 @@ exploratory effect summaries, optional bootstrap summaries, and optional model f
 }
 \description{
 Fits the Zentangler parallel multi-view mediation workflow using a \code{MultiAssayExperiment} input.
-For each mediator in each view, the method estimates an exposure-to-mediator a-path, screens mediators
-within view, fits selected mediators jointly in a Y-stage model, and ranks mediators using \code{a * b}.
+For each mediator in each view, the method estimates an exposure-to-mediator a-path, optionally screens
+mediators within view, fits the retained mediators jointly in a Y-stage model, and ranks mediators using \code{a * b}.
 }
 \examples{
 \dontrun{

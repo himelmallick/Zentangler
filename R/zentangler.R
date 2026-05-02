@@ -363,13 +363,19 @@ hima_sis_default_n <- function(n, p) {
   max(1L, min(p, floor(n / max(log(n), 1.0))))
 }
 
-hima_screen_mediators <- function(M, X, C = NULL, sis_n = NULL, rank_by = c("abs_a", "pvalue")) {
+hima_screen_mediators <- function(
+  M,
+  X,
+  C = NULL,
+  sis_n = NULL,
+  rank_by = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none")
+) {
   rank_by <- match.arg(rank_by)
+  screen_method <- match.arg(screen_method)
 
   n <- nrow(M)
   p <- ncol(M)
-  if (is.null(sis_n)) sis_n <- hima_sis_default_n(n = n, p = p)
-  sis_n <- max(1L, min(p, as.integer(sis_n)))
 
   tab <- data.frame(
     mediator = colnames(M),
@@ -399,12 +405,22 @@ hima_screen_mediators <- function(M, X, C = NULL, sis_n = NULL, rank_by = c("abs
     order(tab$p_a, na.last = TRUE)
   }
 
-  selected <- tab$mediator[ord][seq_len(sis_n)]
+  if (screen_method == "none") {
+    # Keep every mediator that survived sample alignment and numeric filtering.
+    # A-path estimates are still computed because they are part of the mediation score.
+    sis_n_used <- p
+    selected <- tab$mediator
+  } else {
+    if (is.null(sis_n)) sis_n <- hima_sis_default_n(n = n, p = p)
+    sis_n_used <- max(1L, min(p, as.integer(sis_n)))
+    selected <- tab$mediator[ord][seq_len(sis_n_used)]
+  }
+
   tab$selected <- tab$mediator %in% selected
   tab <- tab[order(tab$p_a, na.last = TRUE), ]
   rownames(tab) <- NULL
 
-  list(table = tab, selected = selected, sis_n = sis_n)
+  list(table = tab, selected = selected, sis_n = sis_n_used, screen_method = screen_method)
 }
 
 # -----------------------------------------------------------------------------
@@ -1066,6 +1082,7 @@ assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec) {
   q_a_map <- setNames(screen_tab$q_a, screen_tab$mediator)
   sel_map <- setNames(screen_tab$selected, screen_tab$mediator)
   med <- names(a_map)
+  selected <- as.logical(sel_map[med])
 
   out <- data.frame(
     mediator = med,
@@ -1074,7 +1091,8 @@ assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec) {
     q_a = q_a_map[med],
     b = b_vec[med],
     p_b = p_b_vec[med],
-    selected_by_sis = as.logical(sel_map[med]),
+    selected_by_screen = selected,
+    selected_by_sis = selected,
     stringsAsFactors = FALSE
   )
 
@@ -1235,6 +1253,7 @@ bootstrap_multiview_fit <- function(
   residualize,
   sis_n,
   sis_rank,
+  screen_method,
   fusion_mode,
   y_family,
   lambda_choice,
@@ -1284,6 +1303,7 @@ bootstrap_multiview_fit <- function(
         residualize = residualize,
         sis_n = sis_n,
         sis_rank = sis_rank,
+        screen_method = screen_method,
         fusion_mode = fusion_mode,
         y_family = y_family,
         lambda_choice = lambda_choice,
@@ -1341,6 +1361,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   residualize = FALSE,
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none"),
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
@@ -1357,6 +1378,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   bootstrap_id = NULL
 ) {
   sis_rank <- match.arg(sis_rank)
+  screen_method <- match.arg(screen_method)
   fusion_mode <- match.arg(fusion_mode)
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
@@ -1385,7 +1407,14 @@ fit_multiview_parallel_zentangler_blocks <- function(
   }
 
   screens <- lapply(names(blocks_model), function(view) {
-    hima_screen_mediators(blocks_model[[view]], X_model, C = C_model, sis_n = sis_n, rank_by = sis_rank)
+    hima_screen_mediators(
+      blocks_model[[view]],
+      X_model,
+      C = C_model,
+      sis_n = sis_n,
+      rank_by = sis_rank,
+      screen_method = screen_method
+    )
   })
   names(screens) <- names(blocks_model)
 
@@ -1465,6 +1494,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
       residualize = residualize,
       sis_n = sis_n,
       sis_rank = sis_rank,
+      screen_method = screen_method,
       fusion_mode = fusion_mode,
       y_family = y_family,
       lambda_choice = lambda_choice,
@@ -1515,6 +1545,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
       residualize = residualize,
       sis_n = sis_n,
       sis_rank = sis_rank,
+      screen_method = screen_method,
       a_stage_model = "lm_univariate",
       fusion_mode = fusion_mode,
       y_family = y_family,
@@ -1548,6 +1579,7 @@ fit_multiview_parallel_zentangler <- function(
   residualize = FALSE,
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none"),
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
@@ -1572,6 +1604,7 @@ fit_multiview_parallel_zentangler <- function(
   # That keeps the package-facing API Bioconductor-native without duplicating
   # the modeling code.
   duplicate_primary <- match.arg(duplicate_primary)
+  screen_method <- match.arg(screen_method)
 
   inputs <- zentangler_mae_to_blocks(
     mae = mae,
@@ -1590,6 +1623,7 @@ fit_multiview_parallel_zentangler <- function(
     residualize = residualize,
     sis_n = sis_n,
     sis_rank = sis_rank,
+    screen_method = screen_method,
     fusion_mode = fusion_mode,
     y_family = y_family,
     lambda_choice = lambda_choice,

@@ -21,6 +21,7 @@ OUTCOME_TYPE <- "continuous"
 FUSION_MODES <- c("early", "intermediate", "late")
 SIS_N_PER_VIEW <- 50L
 SIS_RANK <- "abs_a"
+SCREEN_METHOD <- "sis" # "sis" or "none"; "none" passes all filtered mediators to the B-stage
 LAMBDA_CHOICE <- "lambda.1se"
 COOP_RHO <- 0.20
 B_INFERENCE <- "debiased_lasso"
@@ -160,6 +161,7 @@ for (fusion_mode in FUSION_MODES) {
     view_names = view_names,
     sis_n = SIS_N_PER_VIEW,
     sis_rank = SIS_RANK,
+    screen_method = SCREEN_METHOD,
     fusion_mode = fusion_mode,
     y_family = if (OUTCOME_TYPE == "binary") "binomial" else "gaussian",
     lambda_choice = LAMBDA_CHOICE,
