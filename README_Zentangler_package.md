@@ -13,8 +13,8 @@ Each assay in the `MultiAssayExperiment` is treated as one view. Examples of vie
 ## Installation
 
 ```r
-# install.packages("remotes")
-remotes::install_github("YOUR_USERNAME/Zentangler")
+# install.packages("devtools")
+devtools::install_github("himelmallick/zentangler")
 ```
 
 ## Main Function

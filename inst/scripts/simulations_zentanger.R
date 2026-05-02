@@ -1,5 +1,28 @@
 suppressPackageStartupMessages({
-  library(Zentangler)
+  get_script_path <- function() {
+    file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+    if (length(file_arg) > 0) return(sub("^--file=", "", file_arg[1]))
+    if (!is.null(sys.frames()[[1]]$ofile)) return(sys.frames()[[1]]$ofile)
+    NULL
+  }
+
+  script_path <- get_script_path()
+  pkg_dir <- if (!is.null(script_path)) {
+    normalizePath(file.path(dirname(script_path), "..", ".."), mustWork = FALSE)
+  } else {
+    normalizePath(getwd(), mustWork = FALSE)
+  }
+
+  if (
+    requireNamespace("devtools", quietly = TRUE) &&
+      file.exists(file.path(pkg_dir, "DESCRIPTION")) &&
+      file.exists(file.path(pkg_dir, "R", "zentangler.R"))
+  ) {
+    devtools::load_all(pkg_dir, quiet = TRUE)
+  } else {
+    library(Zentangler)
+  }
+
   library(MultiAssayExperiment)
   library(SummarizedExperiment)
   library(S4Vectors)
@@ -144,9 +167,14 @@ run_intersim_zentangler <- function(
     nsample = 150,
     fusion_modes = c("early", "intermediate", "late"),
     sis_n = 50,
+    sis_rank = c("abs_a", "pvalue"),
+    screen_method = c("sis", "none"),
     q_threshold = 0.25,
     out_prefix = "zentangler_intersim"
 ) {
+  sis_rank <- match.arg(sis_rank)
+  screen_method <- match.arg(screen_method)
+
   results <- list()
   
   for (r in seq_len(nrep)) {
@@ -170,6 +198,8 @@ run_intersim_zentangler <- function(
           x_var = "A",
           y_var = "Y",
           sis_n = sis_n,
+          sis_rank = sis_rank,
+          screen_method = screen_method,
           fusion_mode = fm,
           y_family = "gaussian",
           b_inference = "debiased_lasso",
@@ -222,26 +252,53 @@ run_intersim_zentangler <- function(
   raw <- do.call(rbind, results)
   
   ok <- is.na(raw$error)
-  
-  summary <- aggregate(
-    cbind(
-      n_active,
-      true_active,
-      false_active,
-      precision,
-      recall,
-      fdr,
-      top50_true,
-      top50_precision
-    ) ~ fusion_mode,
-    data = raw[ok, ],
-    FUN = function(x) mean(as.numeric(x), na.rm = TRUE)
+
+  metric_cols <- c(
+    "n_active",
+    "true_active",
+    "false_active",
+    "precision",
+    "recall",
+    "fdr",
+    "top50_true",
+    "top50_precision"
   )
+
+  if (any(ok)) {
+    summary_list <- lapply(split(raw[ok, , drop = FALSE], raw$fusion_mode[ok]), function(d) {
+      vals <- vapply(metric_cols, function(nm) {
+        mean(as.numeric(d[[nm]]), na.rm = TRUE)
+      }, numeric(1))
+      data.frame(
+        fusion_mode = unique(d$fusion_mode)[1],
+        as.data.frame(as.list(vals), check.names = FALSE),
+        stringsAsFactors = FALSE
+      )
+    })
+    summary <- do.call(rbind, summary_list)
+    rownames(summary) <- NULL
+  } else {
+    summary <- data.frame()
+  }
   
+  out_prefix <- paste0(out_prefix, "_", screen_method)
   write.csv(raw, paste0(out_prefix, "_raw_results.csv"), row.names = FALSE)
   write.csv(summary, paste0(out_prefix, "_summary_results.csv"), row.names = FALSE)
   
-  list(raw = raw, summary = summary)
+  list(
+    raw = raw,
+    summary = summary,
+    settings = list(
+      nrep = nrep,
+      nsample = nsample,
+      fusion_modes = fusion_modes,
+      sis_n = sis_n,
+      sis_rank = sis_rank,
+      screen_method = screen_method,
+      q_threshold = q_threshold,
+      out_prefix = out_prefix
+    )
+  )
 }
 
 res_sis <- run_intersim_zentangler(
@@ -261,4 +318,5 @@ res_none <- run_intersim_zentangler(
   q_threshold = 0.25
 )
 
-res$summary
+res_sis$summary
+res_none$summary
