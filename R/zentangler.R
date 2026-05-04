@@ -11,10 +11,12 @@
 # - x_var and y_var are numeric columns in colData(mae).
 #
 # Method structure:
-# - A-stage: per-view HIMA-like univariate screen, M_j^(k) ~ X + C.
+# - A-stage: per-view HIMA-like univariate screen, M_j^(k) ~ X + C,
+#   or optional MaAsLin2 fixed/random-effect screen for longitudinal data.
 # - SIS: keep top mediators per view.
 # - B/Y-stage: fit selected mediators jointly using early, intermediate, or late
-#   lasso-based fusion.
+#   fusion. Early/late use glmnet and can be lasso or elastic net through
+#   glmnet_alpha; intermediate currently uses a cooperative lasso-style update.
 # - Score: a_j * b_j, reported for every mediator with view labels preserved.
 #
 # Scientific status:
@@ -423,9 +425,183 @@ hima_screen_mediators <- function(
   list(table = tab, selected = selected, sis_n = sis_n_used, screen_method = screen_method)
 }
 
+pick_first_col <- function(df, candidates) {
+  hit <- intersect(candidates, colnames(df))
+  if (length(hit) == 0) return(NULL)
+  hit[[1]]
+}
+
+hima_screen_mediators_maaslin2 <- function(
+  M,
+  pheno_df,
+  x_var,
+  covariates = NULL,
+  random_effects = NULL,
+  sis_n = NULL,
+  rank_by = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none"),
+  normalization = "NONE",
+  transform = "NONE",
+  analysis_method = "LM",
+  standardize = FALSE,
+  output_dir = NULL
+) {
+  # MaAsLin2 A-stage:
+  #   mediator_j ~ X + fixed covariates + optional random effects
+  #
+  # This is mainly for longitudinal/repeated-measures settings where the
+  # exposure-to-mediator leg should account for subject-level clustering.
+  rank_by <- match.arg(rank_by)
+  screen_method <- match.arg(screen_method)
+
+  if (!requireNamespace("Maaslin2", quietly = TRUE)) {
+    stop("Package 'Maaslin2' is required when a_stage_model = 'maaslin2'.")
+  }
+
+  if (is.null(rownames(M)) || is.null(rownames(pheno_df))) {
+    stop("M and pheno_df must have sample IDs in rownames for MaAsLin2 screening.")
+  }
+
+  ids <- rownames(M)
+  if (!all(ids %in% rownames(pheno_df))) {
+    stop("Some mediator sample IDs are missing in pheno_df for MaAsLin2 screening.")
+  }
+
+  n <- nrow(M)
+  p <- ncol(M)
+
+  covariates <- unique(covariates)
+  random_effects <- unique(random_effects)
+  needed <- unique(c(x_var, covariates, random_effects))
+  missing_vars <- setdiff(needed, colnames(pheno_df))
+  if (length(missing_vars) > 0) {
+    stop("Missing MaAsLin2 metadata columns in pheno_df: ", paste(missing_vars, collapse = ", "))
+  }
+
+  fixed_effects <- unique(c(x_var, covariates))
+  if (length(random_effects) > 0) fixed_effects <- setdiff(fixed_effects, random_effects)
+  if (!(x_var %in% fixed_effects)) fixed_effects <- c(x_var, fixed_effects)
+
+  meta <- pheno_df[ids, unique(c(fixed_effects, random_effects)), drop = FALSE]
+
+  out_dir <- output_dir
+  if (is.null(out_dir) || !nzchar(out_dir)) {
+    out_dir <- tempfile(pattern = "zentangler_maaslin2_a_")
+  }
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  fit <- Maaslin2::Maaslin2(
+    input_data = as.data.frame(M, check.names = FALSE, stringsAsFactors = FALSE),
+    input_metadata = as.data.frame(meta, check.names = FALSE, stringsAsFactors = FALSE),
+    output = out_dir,
+    fixed_effects = fixed_effects,
+    random_effects = if (length(random_effects) > 0) random_effects else NULL,
+    normalization = normalization,
+    transform = transform,
+    analysis_method = analysis_method,
+    standardize = standardize,
+    max_significance = 1,
+    plot_heatmap = FALSE,
+    plot_scatter = FALSE,
+    save_models = FALSE
+  )
+
+  res <- fit$results
+  if (is.null(res) || nrow(res) == 0) {
+    all_res_path <- file.path(out_dir, "all_results.tsv")
+    if (file.exists(all_res_path)) {
+      res <- utils::read.delim(all_res_path, sep = "\t", header = TRUE, check.names = FALSE, stringsAsFactors = FALSE)
+    }
+  }
+  if (is.null(res) || nrow(res) == 0) stop("MaAsLin2 returned no association results.")
+
+  feature_col <- pick_first_col(res, c("feature", "name"))
+  meta_col <- pick_first_col(res, c("metadata", "variable", "covariate"))
+  coef_col <- pick_first_col(res, c("coef", "estimate", "value", "beta"))
+  p_col <- pick_first_col(res, c("pval", "pvalue", "p"))
+  q_col <- pick_first_col(res, c("qval", "qvalue", "q"))
+
+  if (is.null(feature_col) || is.null(meta_col) || is.null(coef_col) || is.null(p_col)) {
+    stop("Unexpected MaAsLin2 result schema; could not find feature, metadata, coefficient, and p-value columns.")
+  }
+
+  res_x <- res[as.character(res[[meta_col]]) == x_var, , drop = FALSE]
+
+  tab <- data.frame(
+    mediator = colnames(M),
+    a_hat = NA_real_,
+    p_a = NA_real_,
+    q_a = NA_real_,
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(res_x) > 0) {
+    feat <- as.character(res_x[[feature_col]])
+    idx <- match(feat, tab$mediator)
+    keep <- !is.na(idx)
+    if (any(keep)) {
+      tab$a_hat[idx[keep]] <- as.numeric(res_x[[coef_col]][keep])
+      tab$p_a[idx[keep]] <- as.numeric(res_x[[p_col]][keep])
+      if (!is.null(q_col) && q_col %in% colnames(res_x)) {
+        tab$q_a[idx[keep]] <- as.numeric(res_x[[q_col]][keep])
+      }
+    }
+  }
+
+  q_bh <- p.adjust(tab$p_a, method = "BH")
+  missing_q <- !is.finite(tab$q_a)
+  tab$q_a[missing_q] <- q_bh[missing_q]
+
+  ord <- if (rank_by == "abs_a") {
+    order(abs(tab$a_hat), decreasing = TRUE, na.last = TRUE)
+  } else {
+    order(tab$p_a, na.last = TRUE)
+  }
+
+  if (screen_method == "none") {
+    sis_n_used <- p
+    selected <- tab$mediator
+  } else {
+    if (is.null(sis_n)) sis_n <- hima_sis_default_n(n = n, p = p)
+    sis_n_used <- max(1L, min(p, as.integer(sis_n)))
+    selected <- tab$mediator[ord][seq_len(sis_n_used)]
+  }
+
+  tab$selected <- tab$mediator %in% selected
+  tab <- tab[order(tab$p_a, na.last = TRUE), ]
+  rownames(tab) <- NULL
+
+  list(
+    table = tab,
+    selected = selected,
+    sis_n = sis_n_used,
+    screen_method = screen_method,
+    a_stage_model = "maaslin2",
+    output_dir = out_dir,
+    fixed_effects = fixed_effects,
+    random_effects = random_effects
+  )
+}
+
 # -----------------------------------------------------------------------------
 # Fusion / Y-stage helpers
 # -----------------------------------------------------------------------------
+
+validate_glmnet_alpha <- function(glmnet_alpha) {
+  if (length(glmnet_alpha) != 1L || !is.numeric(glmnet_alpha) || !is.finite(glmnet_alpha)) {
+    stop("glmnet_alpha must be one finite numeric value between 0 and 1.")
+  }
+  if (glmnet_alpha < 0 || glmnet_alpha > 1) {
+    stop("glmnet_alpha must be between 0 and 1. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.")
+  }
+  as.numeric(glmnet_alpha)
+}
+
+glmnet_alpha_label <- function(glmnet_alpha) {
+  if (isTRUE(all.equal(glmnet_alpha, 1))) return("lasso")
+  if (isTRUE(all.equal(glmnet_alpha, 0))) return("ridge")
+  paste0("elastic net alpha=", format(glmnet_alpha, trim = TRUE, scientific = FALSE))
+}
 
 choose_block_lambda <- function(Y, W, M, y_family, lambda_choice) {
   Z <- cbind(W, M)
@@ -463,10 +639,12 @@ fit_block_lasso_for_late <- function(
   C = NULL,
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
   prefix = "B::"
 ) {
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
 
   M2 <- as.matrix(M)
   colnames(M2) <- paste0(prefix, colnames(M))
@@ -483,7 +661,7 @@ fit_block_lasso_for_late <- function(
     x = as.matrix(Z),
     y = Y,
     family = y_family,
-    alpha = 1,
+    alpha = glmnet_alpha,
     penalty.factor = pf,
     standardize = TRUE
   )
@@ -510,10 +688,12 @@ fit_y_multiview_glmnet_lasso <- function(
   blocks,
   C = NULL,
   y_family = c("gaussian", "binomial"),
-  lambda_choice = c("lambda.1se", "lambda.min")
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1
 ) {
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
 
   pref <- prefix_multiview_blocks(blocks)
   Z <- cbind(X = X)
@@ -528,7 +708,7 @@ fit_y_multiview_glmnet_lasso <- function(
     x = as.matrix(Z),
     y = Y,
     family = y_family,
-    alpha = 1,
+    alpha = glmnet_alpha,
     penalty.factor = pf,
     standardize = TRUE
   )
@@ -549,7 +729,7 @@ fit_y_multiview_glmnet_lasso <- function(
   if (!is.finite(x_coef)) x_coef <- 0
 
   list(
-    method = "K-view early fusion lasso",
+    method = paste0("K-view early fusion glmnet (", glmnet_alpha_label(glmnet_alpha), ")"),
     coef_by_view = coef_by_view,
     x_coef = as.numeric(x_coef),
     fit = cvfit,
@@ -679,10 +859,12 @@ fit_y_multiview_late_fusion_lasso <- function(
   blocks,
   C = NULL,
   y_family = c("gaussian", "binomial"),
-  lambda_choice = c("lambda.1se", "lambda.min")
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1
 ) {
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
 
   block_fits <- lapply(names(blocks), function(view) {
     fit_block_lasso_for_late(
@@ -692,6 +874,7 @@ fit_y_multiview_late_fusion_lasso <- function(
       C = C,
       y_family = y_family,
       lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha,
       prefix = paste0(view, "::")
     )
   })
@@ -720,7 +903,7 @@ fit_y_multiview_late_fusion_lasso <- function(
   x_coef <- sum(vapply(names(blocks), function(view) block_fits[[view]]$x_coef * weights[view], numeric(1)))
 
   list(
-    method = "K-view late fusion two-stage lasso",
+    method = paste0("K-view late fusion two-stage glmnet (", glmnet_alpha_label(glmnet_alpha), ")"),
     coef_by_view = coef_by_view,
     x_coef = as.numeric(x_coef),
     fit = list(blocks = lapply(block_fits, `[[`, "cvfit"), meta = meta_fit),
@@ -736,6 +919,7 @@ fit_y_multiview_stage <- function(
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
   coop_rho = 0.2,
   coop_maxit = 100,
   coop_tol = 1e-04
@@ -743,8 +927,15 @@ fit_y_multiview_stage <- function(
   fusion_mode <- match.arg(fusion_mode)
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
 
   if (identical(fusion_mode, "intermediate")) {
+    if (!isTRUE(all.equal(glmnet_alpha, 1))) {
+      warning(
+        "glmnet_alpha is currently applied only to early and late fusion. ",
+        "Intermediate fusion uses the cooperative lasso-style update with alpha=1."
+      )
+    }
     return(fit_y_multiview_cooperative_intermediate(
       Y = Y,
       X = X,
@@ -765,7 +956,8 @@ fit_y_multiview_stage <- function(
       blocks = blocks,
       C = C,
       y_family = y_family,
-      lambda_choice = lambda_choice
+      lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha
     ))
   }
 
@@ -775,7 +967,8 @@ fit_y_multiview_stage <- function(
     blocks = blocks,
     C = C,
     y_family = y_family,
-    lambda_choice = lambda_choice
+    lambda_choice = lambda_choice,
+    glmnet_alpha = glmnet_alpha
   )
 }
 
@@ -1254,9 +1447,17 @@ bootstrap_multiview_fit <- function(
   sis_n,
   sis_rank,
   screen_method,
+  a_stage_model,
+  maaslin2_random_effect,
+  maaslin2_normalization,
+  maaslin2_transform,
+  maaslin2_analysis_method,
+  maaslin2_standardize,
+  maaslin2_output_dir,
   fusion_mode,
   y_family,
   lambda_choice,
+  glmnet_alpha,
   b_inference,
   debias_max_targets,
   coop_rho,
@@ -1293,6 +1494,12 @@ bootstrap_multiview_fit <- function(
       next
     }
 
+    maaslin2_output_dir_b <- if (!is.null(maaslin2_output_dir) && nzchar(maaslin2_output_dir)) {
+      file.path(maaslin2_output_dir, paste0("bootstrap_", b))
+    } else {
+      NULL
+    }
+
     fit_b <- try(
       fit_multiview_parallel_zentangler_blocks(
         blocks = bt$blocks,
@@ -1304,9 +1511,17 @@ bootstrap_multiview_fit <- function(
         sis_n = sis_n,
         sis_rank = sis_rank,
         screen_method = screen_method,
+        a_stage_model = a_stage_model,
+        maaslin2_random_effect = maaslin2_random_effect,
+        maaslin2_normalization = maaslin2_normalization,
+        maaslin2_transform = maaslin2_transform,
+        maaslin2_analysis_method = maaslin2_analysis_method,
+        maaslin2_standardize = maaslin2_standardize,
+        maaslin2_output_dir = maaslin2_output_dir_b,
         fusion_mode = fusion_mode,
         y_family = y_family,
         lambda_choice = lambda_choice,
+        glmnet_alpha = glmnet_alpha,
         b_inference = b_inference,
         debias_max_targets = debias_max_targets,
         coop_rho = coop_rho,
@@ -1362,9 +1577,17 @@ fit_multiview_parallel_zentangler_blocks <- function(
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
+  a_stage_model = c("lm", "maaslin2"),
+  maaslin2_random_effect = NULL,
+  maaslin2_normalization = "NONE",
+  maaslin2_transform = "NONE",
+  maaslin2_analysis_method = "LM",
+  maaslin2_standardize = FALSE,
+  maaslin2_output_dir = NULL,
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -1379,13 +1602,15 @@ fit_multiview_parallel_zentangler_blocks <- function(
 ) {
   sis_rank <- match.arg(sis_rank)
   screen_method <- match.arg(screen_method)
+  a_stage_model <- match.arg(a_stage_model)
   fusion_mode <- match.arg(fusion_mode)
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
   b_inference <- match.arg(b_inference)
   set.seed(seed)
 
-  needed <- unique(c(x_var, y_var, covariates, bootstrap_id))
+  needed <- unique(c(x_var, y_var, covariates, bootstrap_id, maaslin2_random_effect))
   al <- align_samples_multiview_blocks(blocks, pheno_df, needed_pheno_cols = needed)
   blocks0 <- al$blocks
   X_raw <- al$pheno[[x_var]]
@@ -1407,14 +1632,40 @@ fit_multiview_parallel_zentangler_blocks <- function(
   }
 
   screens <- lapply(names(blocks_model), function(view) {
-    hima_screen_mediators(
-      blocks_model[[view]],
-      X_model,
-      C = C_model,
-      sis_n = sis_n,
-      rank_by = sis_rank,
-      screen_method = screen_method
-    )
+    if (identical(a_stage_model, "maaslin2")) {
+      if (residualize) {
+        warning("MaAsLin2 A-stage uses non-residualized X/mediators and models covariates/random effects directly.")
+      }
+      view_out_dir <- if (!is.null(maaslin2_output_dir) && nzchar(maaslin2_output_dir)) {
+        file.path(maaslin2_output_dir, paste0("a_stage_", view))
+      } else {
+        NULL
+      }
+      hima_screen_mediators_maaslin2(
+        M = blocks0[[view]],
+        pheno_df = al$pheno,
+        x_var = x_var,
+        covariates = covariates,
+        random_effects = maaslin2_random_effect,
+        sis_n = sis_n,
+        rank_by = sis_rank,
+        screen_method = screen_method,
+        normalization = maaslin2_normalization,
+        transform = maaslin2_transform,
+        analysis_method = maaslin2_analysis_method,
+        standardize = maaslin2_standardize,
+        output_dir = view_out_dir
+      )
+    } else {
+      hima_screen_mediators(
+        blocks_model[[view]],
+        X_model,
+        C = C_model,
+        sis_n = sis_n,
+        rank_by = sis_rank,
+        screen_method = screen_method
+      )
+    }
   })
   names(screens) <- names(blocks_model)
 
@@ -1431,6 +1682,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     fusion_mode = fusion_mode,
     y_family = y_family,
     lambda_choice = lambda_choice,
+    glmnet_alpha = glmnet_alpha,
     coop_rho = coop_rho,
     coop_maxit = coop_maxit,
     coop_tol = coop_tol
@@ -1495,9 +1747,17 @@ fit_multiview_parallel_zentangler_blocks <- function(
       sis_n = sis_n,
       sis_rank = sis_rank,
       screen_method = screen_method,
+      a_stage_model = a_stage_model,
+      maaslin2_random_effect = maaslin2_random_effect,
+      maaslin2_normalization = maaslin2_normalization,
+      maaslin2_transform = maaslin2_transform,
+      maaslin2_analysis_method = maaslin2_analysis_method,
+      maaslin2_standardize = maaslin2_standardize,
+      maaslin2_output_dir = maaslin2_output_dir,
       fusion_mode = fusion_mode,
       y_family = y_family,
       lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha,
       b_inference = b_inference,
       debias_max_targets = debias_max_targets,
       coop_rho = coop_rho,
@@ -1530,7 +1790,11 @@ fit_multiview_parallel_zentangler_blocks <- function(
       p_a = setNames(screens[[view]]$table$p_a, screens[[view]]$table$mediator),
       b = setNames(view_tables[[view]]$b, view_tables[[view]]$mediator),
       p_b = setNames(view_tables[[view]]$p_b, view_tables[[view]]$mediator),
-      mediators = view_tables[[view]]
+      mediators = view_tables[[view]],
+      a_stage_model = if (!is.null(screens[[view]]$a_stage_model)) screens[[view]]$a_stage_model else a_stage_model,
+      maaslin2_output_dir = screens[[view]]$output_dir,
+      maaslin2_fixed_effects = screens[[view]]$fixed_effects,
+      maaslin2_random_effects = screens[[view]]$random_effects
     )
   })
   names(views_out) <- names(blocks_model)
@@ -1546,12 +1810,26 @@ fit_multiview_parallel_zentangler_blocks <- function(
       sis_n = sis_n,
       sis_rank = sis_rank,
       screen_method = screen_method,
-      a_stage_model = "lm_univariate",
+      a_stage_model = a_stage_model,
+      maaslin2_random_effect = maaslin2_random_effect,
+      maaslin2_normalization = maaslin2_normalization,
+      maaslin2_transform = maaslin2_transform,
+      maaslin2_analysis_method = maaslin2_analysis_method,
+      maaslin2_standardize = maaslin2_standardize,
+      maaslin2_output_dir = maaslin2_output_dir,
       fusion_mode = fusion_mode,
       y_family = y_family,
       lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha,
+      glmnet_penalty = glmnet_alpha_label(if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha),
+      glmnet_alpha_used_in_y_stage = if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha,
       b_inference = b_inference,
       b_inference_method = p_b_infer$method,
+      b_inference_note = if (identical(b_inference, "debiased_lasso") && !isTRUE(all.equal(glmnet_alpha, 1))) {
+        "B-path p-values use the current HIMA-style de-biased lasso routine; elastic-net alpha changes early/late Y-stage coefficient fitting, not the de-biased inference formula."
+      } else {
+        NA_character_
+      },
       debias_max_targets = debias_max_targets,
       y_model_method = yfit$method,
       bootstrap_repeats = as.integer(bootstrap_repeats),
@@ -1580,9 +1858,17 @@ fit_multiview_parallel_zentangler <- function(
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
+  a_stage_model = c("lm", "maaslin2"),
+  maaslin2_random_effect = NULL,
+  maaslin2_normalization = "NONE",
+  maaslin2_transform = "NONE",
+  maaslin2_analysis_method = "LM",
+  maaslin2_standardize = FALSE,
+  maaslin2_output_dir = NULL,
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -1624,9 +1910,17 @@ fit_multiview_parallel_zentangler <- function(
     sis_n = sis_n,
     sis_rank = sis_rank,
     screen_method = screen_method,
+    a_stage_model = a_stage_model,
+    maaslin2_random_effect = maaslin2_random_effect,
+    maaslin2_normalization = maaslin2_normalization,
+    maaslin2_transform = maaslin2_transform,
+    maaslin2_analysis_method = maaslin2_analysis_method,
+    maaslin2_standardize = maaslin2_standardize,
+    maaslin2_output_dir = maaslin2_output_dir,
     fusion_mode = fusion_mode,
     y_family = y_family,
     lambda_choice = lambda_choice,
+    glmnet_alpha = glmnet_alpha,
     b_inference = b_inference,
     debias_max_targets = debias_max_targets,
     coop_rho = coop_rho,

@@ -9,6 +9,7 @@
 #' @param sis_n Number of mediators retained per view when \code{screen_method = "sis"}.
 #' @param sis_rank Ranking criterion for SIS.
 #' @param screen_method Screening method passed to \code{fit_multiview_parallel_zentangler()}.
+#' @param a_stage_model A-stage model: \code{"lm"} for HIMA-like univariate linear models or \code{"maaslin2"} for MaAsLin2 fixed/random-effect screening.
 #' @param q_threshold BH q-value threshold used to define active mediators.
 #' @param top_n Number of top-ranked mediators used for top-k truth recovery.
 #' @param seed Random seed passed to \code{gen_simmba()} and model fits.
@@ -16,6 +17,13 @@
 #' @param ygen.mode Outcome generation mode passed to \code{gen_simmba()}.
 #' @param outcome.type Outcome type passed to \code{gen_simmba()}.
 #' @param lambda_choice Cross-validated glmnet lambda choice.
+#' @param glmnet_alpha Glmnet mixing parameter for early and late fusion. Use 1 for lasso, values between 0 and 1 for elastic net, and 0 for ridge. Intermediate fusion currently uses the cooperative lasso-style update.
+#' @param maaslin2_random_effect Optional MaAsLin2 random-effect column name.
+#' @param maaslin2_normalization MaAsLin2 normalization method.
+#' @param maaslin2_transform MaAsLin2 transform method.
+#' @param maaslin2_analysis_method MaAsLin2 analysis method.
+#' @param maaslin2_standardize Logical passed to MaAsLin2.
+#' @param maaslin2_output_dir Optional directory for MaAsLin2 A-stage outputs.
 #' @param b_inference B-path inference method.
 #' @param debias_max_targets Maximum active targets for de-biased lasso inference.
 #' @param coop_rho Agreement penalty strength for intermediate cooperative fusion.
@@ -35,6 +43,7 @@ run_intersim_zentangler <- function(
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
+  a_stage_model = c("lm", "maaslin2"),
   q_threshold = 0.25,
   top_n = 50L,
   seed = 1234,
@@ -42,6 +51,13 @@ run_intersim_zentangler <- function(
   ygen.mode = c("LM", "Friedman", "Friedman2"),
   outcome.type = c("continuous", "binary"),
   lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
+  maaslin2_random_effect = NULL,
+  maaslin2_normalization = "NONE",
+  maaslin2_transform = "NONE",
+  maaslin2_analysis_method = "LM",
+  maaslin2_standardize = FALSE,
+  maaslin2_output_dir = NULL,
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -55,9 +71,11 @@ run_intersim_zentangler <- function(
   fusion_modes <- match.arg(fusion_modes, choices = c("early", "intermediate", "late"), several.ok = TRUE)
   sis_rank <- match.arg(sis_rank)
   screen_method <- match.arg(screen_method)
+  a_stage_model <- match.arg(a_stage_model)
   ygen.mode <- match.arg(ygen.mode)
   outcome.type <- match.arg(outcome.type)
   lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
   b_inference <- match.arg(b_inference)
 
   if (identical(outcome.type, "binary")) {
@@ -96,7 +114,9 @@ run_intersim_zentangler <- function(
     for (fusion_mode in fusion_modes) {
       if (isTRUE(verbose)) {
         message("Running rep ", rep_i, " / ", nrep, ", fusion = ", fusion_mode,
-                ", screen_method = ", screen_method)
+                ", screen_method = ", screen_method,
+                ", a_stage_model = ", a_stage_model,
+                ", glmnet_alpha = ", glmnet_alpha)
       }
 
       fit_i <- try(
@@ -110,9 +130,17 @@ run_intersim_zentangler <- function(
           sis_n = sis_n,
           sis_rank = sis_rank,
           screen_method = screen_method,
+          a_stage_model = a_stage_model,
+          maaslin2_random_effect = maaslin2_random_effect,
+          maaslin2_normalization = maaslin2_normalization,
+          maaslin2_transform = maaslin2_transform,
+          maaslin2_analysis_method = maaslin2_analysis_method,
+          maaslin2_standardize = maaslin2_standardize,
+          maaslin2_output_dir = maaslin2_output_dir,
           fusion_mode = fusion_mode,
           y_family = y_family,
           lambda_choice = lambda_choice,
+          glmnet_alpha = glmnet_alpha,
           b_inference = b_inference,
           debias_max_targets = debias_max_targets,
           coop_rho = coop_rho,
@@ -166,6 +194,7 @@ run_intersim_zentangler <- function(
       sis_n = sis_n,
       sis_rank = sis_rank,
       screen_method = screen_method,
+      a_stage_model = a_stage_model,
       q_threshold = q_threshold,
       top_n = top_n,
       seed = seed,
@@ -174,6 +203,13 @@ run_intersim_zentangler <- function(
       outcome.type = outcome.type,
       y_family = y_family,
       lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha,
+      maaslin2_random_effect = maaslin2_random_effect,
+      maaslin2_normalization = maaslin2_normalization,
+      maaslin2_transform = maaslin2_transform,
+      maaslin2_analysis_method = maaslin2_analysis_method,
+      maaslin2_standardize = maaslin2_standardize,
+      maaslin2_output_dir = maaslin2_output_dir,
       b_inference = b_inference,
       debias_max_targets = debias_max_targets,
       coop_rho = coop_rho,

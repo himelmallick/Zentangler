@@ -13,9 +13,17 @@ fit_multiview_parallel_zentangler(
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
+  a_stage_model = c("lm", "maaslin2"),
+  maaslin2_random_effect = NULL,
+  maaslin2_normalization = "NONE",
+  maaslin2_transform = "NONE",
+  maaslin2_analysis_method = "LM",
+  maaslin2_standardize = FALSE,
+  maaslin2_output_dir = NULL,
   fusion_mode = c("early", "intermediate", "late"),
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -42,9 +50,17 @@ fit_multiview_parallel_zentangler(
 \item{sis_n}{Number of mediators to retain per view after screening. If \code{NULL}, a HIMA-style default is used.}
 \item{sis_rank}{Screening rank criterion: absolute a-path estimate or a-path p-value.}
 \item{screen_method}{Mediator screening method. \code{"sis"} keeps the top \code{sis_n} mediators per view; \code{"none"} keeps all mediators that survive numeric and variance filtering.}
+\item{a_stage_model}{A-stage model. \code{"lm"} uses HIMA-like univariate linear models. \code{"maaslin2"} uses MaAsLin2 fixed/random-effect models for the exposure-to-mediator leg.}
+\item{maaslin2_random_effect}{Optional MaAsLin2 random-effect column name in \code{colData(mae)}, for example a subject ID in longitudinal data.}
+\item{maaslin2_normalization}{MaAsLin2 normalization method.}
+\item{maaslin2_transform}{MaAsLin2 transform method.}
+\item{maaslin2_analysis_method}{MaAsLin2 analysis method.}
+\item{maaslin2_standardize}{Logical passed to MaAsLin2.}
+\item{maaslin2_output_dir}{Optional directory where MaAsLin2 A-stage outputs should be written. If \code{NULL}, temporary directories are used.}
 \item{fusion_mode}{Y-stage fusion mode: early, intermediate, or late.}
 \item{y_family}{Outcome family: Gaussian or binomial. Intermediate cooperative fusion currently supports Gaussian outcomes.}
 \item{lambda_choice}{Cross-validated glmnet lambda choice.}
+\item{glmnet_alpha}{Glmnet mixing parameter for early and late fusion. Use \code{1} for lasso, values between \code{0} and \code{1} for elastic net, and \code{0} for ridge. Intermediate fusion currently uses the cooperative lasso-style update.}
 \item{b_inference}{B-path inference method.}
 \item{debias_max_targets}{Maximum number of active B-path targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}
@@ -76,6 +92,7 @@ fit <- fit_multiview_parallel_zentangler(
   y_var = "Y",
   sis_n = 50,
   fusion_mode = "early",
+  glmnet_alpha = 0.5,
   b_inference = "debiased_lasso",
   bootstrap_repeats = 100
 )

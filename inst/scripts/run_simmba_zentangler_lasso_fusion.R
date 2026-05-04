@@ -22,7 +22,14 @@ FUSION_MODES <- c("early", "intermediate", "late")
 SIS_N_PER_VIEW <- 50L
 SIS_RANK <- "abs_a"
 SCREEN_METHOD <- "sis" # "sis" or "none"; "none" passes all filtered mediators to the B-stage
+A_STAGE_MODEL <- "lm" # "lm" or "maaslin2"
+MAASLIN2_RANDOM_EFFECT <- NULL
+MAASLIN2_NORMALIZATION <- "NONE"
+MAASLIN2_TRANSFORM <- "NONE"
+MAASLIN2_ANALYSIS_METHOD <- "LM"
+MAASLIN2_STANDARDIZE <- FALSE
 LAMBDA_CHOICE <- "lambda.1se"
+GLMNET_ALPHA <- 1 # 1 = lasso; try 0.75 or 0.5 for early/late elastic net
 COOP_RHO <- 0.20
 B_INFERENCE <- "debiased_lasso"
 DEBIAS_MAX_TARGETS <- 200L
@@ -162,9 +169,16 @@ for (fusion_mode in FUSION_MODES) {
     sis_n = SIS_N_PER_VIEW,
     sis_rank = SIS_RANK,
     screen_method = SCREEN_METHOD,
+    a_stage_model = A_STAGE_MODEL,
+    maaslin2_random_effect = MAASLIN2_RANDOM_EFFECT,
+    maaslin2_normalization = MAASLIN2_NORMALIZATION,
+    maaslin2_transform = MAASLIN2_TRANSFORM,
+    maaslin2_analysis_method = MAASLIN2_ANALYSIS_METHOD,
+    maaslin2_standardize = MAASLIN2_STANDARDIZE,
     fusion_mode = fusion_mode,
     y_family = if (OUTCOME_TYPE == "binary") "binomial" else "gaussian",
     lambda_choice = LAMBDA_CHOICE,
+    glmnet_alpha = GLMNET_ALPHA,
     b_inference = B_INFERENCE,
     debias_max_targets = DEBIAS_MAX_TARGETS,
     coop_rho = COOP_RHO,

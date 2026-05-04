@@ -27,6 +27,7 @@ Imports:
     utils
 Suggests:
     InterSIM,
+    Maaslin2,
     splatter,
     stringr,
     openxlsx
