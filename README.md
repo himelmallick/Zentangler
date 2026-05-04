@@ -14,7 +14,7 @@ Each assay in the `MultiAssayExperiment` is treated as one view. Examples of vie
 
 ```r
 # install.packages("remotes")
-remotes::install_github(himelmallick/Zentangler")
+remotes::install_github("YOUR_USERNAME/Zentangler")
 ```
 
 ## Main Function
@@ -34,15 +34,12 @@ fit <- fit_multiview_parallel_zentangler(
   mae = mae,
   x_var = "X",
   y_var = "Y",
+  method_preset = "fast_lasso",
   sis_n = 50,
-  screen_method = "sis",
-  fusion_mode = "early",
-  glmnet_alpha = 1,
-  b_inference = "debiased_lasso",
   bootstrap_repeats = 100
 )
 
-head(fit$combined_mediators)
+zentangler_top_mediators(fit, n = 10)
 ```
 
 `x_var` and `y_var` must be columns in `colData(mae)`.
@@ -68,6 +65,22 @@ samples x features
 ```
 
 for model fitting.
+
+## Method Presets
+
+Named presets provide coherent starting configurations while keeping every low-level option available.
+
+```r
+zentangler_method_presets()
+```
+
+Available presets are:
+
+- `custom`: preserve individually supplied options
+- `fast_lasso`: LM A-stage, SIS screening, early-fusion lasso
+- `elastic_net`: LM A-stage, SIS screening, early-fusion elastic net
+- `longitudinal_maaslin2`: MaAsLin2 A-stage, SIS screening, early-fusion lasso
+- `full_exploratory`: LM A-stage, no hard screening, early-fusion elastic net
 
 ## Method Overview
 
@@ -96,6 +109,37 @@ where:
 - `a_jk` is the exposure-to-mediator coefficient
 - `b_jk` is the mediator-to-outcome coefficient from the multiview outcome model
 - `score_jk` is the mediation ranking score
+
+## A-Stage Options
+
+The default A-stage is a HIMA-like univariate linear model:
+
+```r
+a_stage_model = "lm"
+```
+
+For longitudinal or repeated-measures data, Zentangler can use MaAsLin2 for the exposure-to-mediator leg:
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y",
+  a_stage_model = "maaslin2",
+  maaslin2_random_effect = "SubjectID",
+  maaslin2_normalization = "NONE",
+  maaslin2_transform = "NONE",
+  maaslin2_analysis_method = "LM"
+)
+```
+
+In MaAsLin2 mode, the A-stage model is fit as:
+
+```text
+mediator feature ~ X + covariates + optional random effects
+```
+
+The B/Y-stage fusion model remains Zentangler's multiview model.
 
 ## Fusion Modes
 
@@ -224,8 +268,14 @@ The fit object is a list containing:
 
 - `settings`: model settings and selected options
 - `sample_ids`: samples used after alignment and filtering
+- `diagnostics`: runtime, sample counts, feature counts, screening counts, and active B-path counts
 - `views`: per-view mediator results
 - `combined_mediators`: stacked mediator ranking table across views
+- `mediators_all`: alias for the full mediator table
+- `mediators_active`: active mediator table using the default q <= 0.25 rule
+- `mediators_top`: top 20 mediators by absolute score
+- `view_summary`: per-view tested/screened/active mediator counts
+- `model_summary`: one-row summary of the run configuration and diagnostics
 - `x_to_y_coef`: direct exposure coefficient from the selected mediator model
 - `settings$glmnet_alpha`: Y-stage `glmnet` mixing value used for early/late fusion
 - `effect_decomposition`: direct, indirect, and total-effect summaries
@@ -236,6 +286,16 @@ The main table is:
 
 ```r
 fit$combined_mediators
+```
+
+Convenience helpers:
+
+```r
+zentangler_model_summary(fit)
+zentangler_view_summary(fit)
+zentangler_top_mediators(fit, n = 20)
+zentangler_active_mediators(fit, q_threshold = 0.25)
+summarize_zentangler(fit)
 ```
 
 Common columns include:
@@ -256,6 +316,12 @@ Common columns include:
 ## Package Functions
 
 - `fit_multiview_parallel_zentangler()`: fit the multiview parallel mediation model
+- `zentangler_method_presets()`: inspect named analysis presets
+- `zentangler_top_mediators()`: inspect top-ranked mediators
+- `zentangler_active_mediators()`: inspect active mediators under a q-value threshold
+- `zentangler_view_summary()`: summarize tested/screened/active mediators by view
+- `zentangler_model_summary()`: summarize model settings and diagnostics
+- `summarize_zentangler()`: return model, view, top, and active summaries
 - `gen_simmba()`: generate MAE simulation data with mediation truth
 - `run_intersim_zentangler()`: run InterSIM/SIMMBA simulation benchmarks across fusion modes
 - `trigger_InterSIM()`: generate the null InterSIM data object used by the simulator

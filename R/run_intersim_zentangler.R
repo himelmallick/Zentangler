@@ -6,6 +6,7 @@
 #' @param nrep Number of simulation replicates.
 #' @param nsample Number of samples per simulated dataset before train/test split.
 #' @param fusion_modes Fusion modes to evaluate.
+#' @param method_preset Optional named preset. Use \code{"custom"} to keep individual options.
 #' @param sis_n Number of mediators retained per view when \code{screen_method = "sis"}.
 #' @param sis_rank Ranking criterion for SIS.
 #' @param screen_method Screening method passed to \code{fit_multiview_parallel_zentangler()}.
@@ -40,6 +41,7 @@ run_intersim_zentangler <- function(
   nrep = 10,
   nsample = 600,
   fusion_modes = c("early", "intermediate", "late"),
+  method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2", "full_exploratory"),
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -69,6 +71,9 @@ run_intersim_zentangler <- function(
   ...
 ) {
   fusion_modes <- match.arg(fusion_modes, choices = c("early", "intermediate", "late"), several.ok = TRUE)
+  method_preset <- match.arg(method_preset)
+  apply_zentangler_preset(method_preset, environment())
+  if (exists("fusion_mode", inherits = FALSE)) fusion_modes <- fusion_mode
   sis_rank <- match.arg(sis_rank)
   screen_method <- match.arg(screen_method)
   a_stage_model <- match.arg(a_stage_model)
@@ -125,6 +130,7 @@ run_intersim_zentangler <- function(
           x_var = "A",
           y_var = "Y",
           view_names = view_names,
+          method_preset = method_preset,
           covariates = covariates,
           residualize = residualize,
           sis_n = sis_n,
@@ -191,6 +197,7 @@ run_intersim_zentangler <- function(
       nrep = nrep,
       nsample = nsample,
       fusion_modes = fusion_modes,
+      method_preset = method_preset,
       sis_n = sis_n,
       sis_rank = sis_rank,
       screen_method = screen_method,

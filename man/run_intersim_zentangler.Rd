@@ -6,6 +6,8 @@ run_intersim_zentangler(
   nrep = 10,
   nsample = 600,
   fusion_modes = c("early", "intermediate", "late"),
+  method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2",
+    "full_exploratory"),
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -39,6 +41,7 @@ run_intersim_zentangler(
 \item{nrep}{Number of simulation replicates.}
 \item{nsample}{Number of samples per simulated dataset before train/test split.}
 \item{fusion_modes}{Fusion modes to evaluate.}
+\item{method_preset}{Optional named preset. Use \code{"custom"} to keep individual options.}
 \item{sis_n}{Number of mediators retained per view when \code{screen_method = "sis"}.}
 \item{sis_rank}{Ranking criterion for SIS.}
 \item{screen_method}{Screening method passed to \code{fit_multiview_parallel_zentangler()}. Use \code{"none"} to skip hard SIS.}

@@ -1,0 +1,563 @@
+---
+title: "Zentangler: MAE-First Multi-View Parallel Mediation"
+author: "Nalin Arora and Himel Mallick"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Zentangler: MAE-First Multi-View Parallel Mediation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+# Overview
+
+Zentangler is a prototype R package for **parallel multi-view mediation analysis** using a Bioconductor-first input interface.
+
+The package is designed for settings where one exposure, `X`, may affect an outcome, `Y`, through many candidate mediators measured across one or more omics or high-dimensional data views.
+
+The current active model is **parallel mediation**, not sequential mediation. In the parallel setting, each mediator is treated as a candidate path from exposure to outcome:
+
+```text
+X -> mediator_j -> Y
+```
+
+With multiple views, the mediators can come from any number of assays:
+
+```text
+X -> View 1 mediator(s) -> Y
+X -> View 2 mediator(s) -> Y
+...
+X -> View K mediator(s) -> Y
+```
+
+The package does not assume that the views are microbiome and metabolome. A view can be any numeric assay in a `MultiAssayExperiment`, for example taxa, pathways, metabolites, proteins, gene modules, clinical biomarkers, imaging scores, or derived features.
+
+# What Zentangler Estimates
+
+For each candidate mediator, Zentangler separates the mediation signal into two main pieces.
+
+The first piece is the **A path**. This asks whether the exposure is associated with the mediator.
+
+```text
+mediator_j = alpha_j + a_j * X + covariates + error
+```
+
+The second piece is the **B path**. This asks whether the mediator is associated with the outcome after accounting for the exposure and other retained mediators.
+
+```text
+Y = beta_0 + c_prime * X + selected_mediators * b + covariates + error
+```
+
+The mediator score is then:
+
+```text
+score_j = a_j * b_j
+```
+
+The score is an exploratory estimate of mediation strength and direction. A positive score means the estimated A and B paths have the same sign. A negative score means they have opposite signs.
+
+The current package also computes a model-level decomposition object with estimated direct, indirect, and total-effect summaries. These are useful for interpretation and reporting, but the package should still be treated as a method-development framework rather than final causal proof.
+
+# Required Input Format
+
+The public Zentangler API is **MAE-first**. Users should provide a `MultiAssayExperiment` object.
+
+The expected structure is:
+
+- `experiments(mae)` contains one or more numeric assay views.
+- `colData(mae)` contains sample-level phenotype variables.
+- `x_var` names the exposure column in `colData(mae)`.
+- `y_var` names the outcome column in `colData(mae)`.
+- Optional covariates are also columns in `colData(mae)`.
+
+Zentangler aligns samples through the `MultiAssayExperiment` infrastructure, extracts numeric assay matrices, removes non-numeric or zero-variance features, and preserves feature names in the final mediator tables.
+
+# Core Workflow
+
+Zentangler follows the same high-level structure in every fit.
+
+1. **Read MAE input**
+
+   The package extracts selected assay views and phenotype variables from the `MultiAssayExperiment`.
+
+2. **Prepare features**
+
+   Each assay view is converted into a sample-by-feature matrix. Numeric features are retained, non-finite values can optionally be filled with zero, and zero-variance features are removed.
+
+3. **Estimate A paths**
+
+   For each view and each mediator, Zentangler estimates the exposure-to-mediator association.
+
+4. **Screen mediators**
+
+   The user can keep all mediators with `screen_method = "none"`, or use sure independence screening with `screen_method = "sis"`.
+
+5. **Fit the multiview outcome model**
+
+   The retained mediators are modeled jointly using early, intermediate, or late fusion.
+
+6. **Estimate B-path evidence**
+
+   The package estimates mediator-to-outcome coefficients and p-values using either HIMA-style de-biased lasso inference or refit-based inference.
+
+7. **Rank mediators**
+
+   Zentangler combines A-path and B-path information into mediator-level tables, including scores, p-values, adjusted q-values, view labels, and diagnostic information.
+
+8. **Summarize output**
+
+   Helper functions return all mediators, active mediators, top mediators, view-level summaries, and model-level summaries.
+
+# A-Stage Options
+
+The A stage estimates whether the exposure is associated with each mediator.
+
+## Linear-model A stage
+
+Use:
+
+```r
+a_stage_model = "lm"
+```
+
+This is the HIMA-like default. Each mediator is modeled separately as a function of exposure and covariates. It is simple, fast, transparent, and works well for simulation studies and first-pass method development.
+
+## MaAsLin2 A stage
+
+Use:
+
+```r
+a_stage_model = "maaslin2"
+```
+
+This option uses MaAsLin2 to estimate the A path. It is useful when the A-stage model should support fixed effects, optional random effects, or workflows familiar to microbiome association analysis.
+
+Example settings:
+
+```r
+a_stage_model = "maaslin2"
+maaslin2_random_effect = "subject_id"
+maaslin2_normalization = "NONE"
+maaslin2_transform = "NONE"
+maaslin2_analysis_method = "LM"
+```
+
+This is especially helpful for longitudinal data where repeated samples from the same subject should be modeled directly in the A stage.
+
+# Screening Options
+
+Zentangler currently supports two screening modes.
+
+## SIS screening
+
+Use:
+
+```r
+screen_method = "sis"
+sis_n = 100
+```
+
+SIS keeps the top mediators per view based on A-stage evidence. This reduces the dimensionality before the B-stage model and makes the outcome model more stable when there are many mediators.
+
+The tradeoff is that aggressive screening can improve false discovery control but reduce recall if true mediators have weak A-stage signals.
+
+## No hard screening
+
+Use:
+
+```r
+screen_method = "none"
+```
+
+This sends all retained numeric mediators to the multiview outcome model. It can improve power when the sample size is large enough, but it is computationally heavier and may be less stable when the number of features is much larger than the number of samples.
+
+# Fusion Options
+
+Zentangler supports three B-stage fusion modes.
+
+## Early fusion
+
+Use:
+
+```r
+fusion_mode = "early"
+```
+
+Early fusion concatenates all selected mediators from all views into one design matrix and fits one penalized model.
+
+This is the simplest multiview option. It lets all mediators compete in a single joint model, which is useful when the goal is to rank individual mediators across all views.
+
+## Intermediate fusion
+
+Use:
+
+```r
+fusion_mode = "intermediate"
+```
+
+Intermediate fusion uses a cooperative-learning-style objective. The goal is to borrow structure across views while still keeping mediator-level coefficients.
+
+This is conceptually useful when views may contain complementary but correlated signals. In the current implementation, intermediate fusion is lasso-style and does not yet use elastic-net mixing.
+
+## Late fusion
+
+Use:
+
+```r
+fusion_mode = "late"
+```
+
+Late fusion fits view-specific models and then combines mediator evidence afterward. This is useful when the views have very different feature distributions or when one wants to inspect each view separately before combining evidence.
+
+# Penalized Model Options
+
+Early and late fusion use `glmnet` for penalized outcome modeling.
+
+Use lasso with:
+
+```r
+glmnet_alpha = 1
+```
+
+Use elastic net with:
+
+```r
+glmnet_alpha = 0.5
+```
+
+Use ridge-like shrinkage with:
+
+```r
+glmnet_alpha = 0
+```
+
+The selected cross-validation lambda is controlled by:
+
+```r
+lambda_choice = "lambda.1se"
+lambda_choice = "lambda.min"
+```
+
+`lambda.1se` is more conservative and usually selects fewer mediators. `lambda.min` is less conservative and may improve recall, often at the cost of selecting more false positives.
+
+# B-Stage Inference Options
+
+The B stage estimates mediator-to-outcome evidence after accounting for exposure and selected mediators.
+
+## De-biased lasso
+
+Use:
+
+```r
+b_inference = "debiased_lasso"
+```
+
+This is the main inference option. It follows the HIMA-style idea of using a sparse outcome model and then applying a de-biasing step to obtain approximate p-values for selected mediator effects.
+
+This is stronger than simply reporting nonzero lasso coefficients, because lasso coefficients are biased toward zero and do not directly provide valid p-values.
+
+## Refit inference
+
+Use:
+
+```r
+b_inference = "refit"
+```
+
+This refits a standard outcome model on the active set and computes p-values from that refit. It is easier to explain and useful as a sensitivity check, but it does not fully solve post-selection inference.
+
+# Method Presets
+
+Presets provide stable, named combinations of options.
+
+Inspect available presets with:
+
+```r
+zentangler_method_presets()
+```
+
+Current presets include:
+
+- `fast_lasso`: LM A-stage, SIS screening, early-fusion lasso, `lambda.1se`.
+- `elastic_net`: LM A-stage, SIS screening, early-fusion elastic net, `lambda.min`.
+- `longitudinal_maaslin2`: MaAsLin2 A-stage, SIS screening, early-fusion lasso.
+- `full_exploratory`: LM A-stage, no hard screening, early-fusion elastic net.
+- `custom`: use the individual arguments exactly as supplied.
+
+Presets are useful for reproducibility because they make method settings explicit and easy to report.
+
+# Example: Simulated MAE Data
+
+The package includes simulation helpers for method development.
+
+```r
+library(Zentangler)
+
+sim <- gen_simmba(
+  nsample = 300,
+  nrep = 1,
+  seed = 1,
+  outcome.type = "continuous"
+)
+
+mae <- sim$trainMae[[1]]
+```
+
+The simulated `mae` object contains multiple assay views and phenotype variables in `colData(mae)`. In the simulation API, `A` is the exposure and `Y` is the outcome.
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_var = "Y",
+  method_preset = "fast_lasso",
+  sis_n = 100
+)
+```
+
+Because `method_preset = "fast_lasso"` is used, the model uses LM A-stage screening, early-fusion lasso, `lambda.1se`, and HIMA-style de-biased lasso B-stage inference.
+
+# Example: Custom Elastic Net Fit
+
+```r
+fit_en <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_var = "Y",
+  method_preset = "custom",
+  a_stage_model = "lm",
+  screen_method = "none",
+  fusion_mode = "early",
+  lambda_choice = "lambda.min",
+  glmnet_alpha = 0.5,
+  b_inference = "debiased_lasso",
+  y_family = "gaussian",
+  seed = 1
+)
+```
+
+This version keeps all mediators after numeric and variance filtering, fits an early-fusion elastic-net outcome model, and uses de-biased lasso inference for the B path.
+
+# Example: Longitudinal A Stage with MaAsLin2
+
+```r
+fit_long <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "time_post",
+  y_var = "outcome",
+  method_preset = "custom",
+  a_stage_model = "maaslin2",
+  maaslin2_random_effect = "subject_id",
+  screen_method = "sis",
+  sis_n = 100,
+  fusion_mode = "early",
+  lambda_choice = "lambda.1se",
+  glmnet_alpha = 1,
+  b_inference = "debiased_lasso",
+  covariates = c("age", "sex"),
+  y_family = "gaussian"
+)
+```
+
+This example models repeated-subject structure in the A stage through MaAsLin2. The B stage is still the multiview Zentangler outcome model.
+
+# Inspecting Results
+
+A Zentangler fit returns a list. The most useful elements are:
+
+```r
+names(fit)
+```
+
+Important elements include:
+
+- `combined_mediators`: full mediator-level table.
+- `mediators_all`: alias for the full mediator-level table.
+- `mediators_active`: active mediators using the default q-value threshold.
+- `mediators_top`: top-ranked mediators by absolute score.
+- `view_summary`: per-view counts and score summaries.
+- `model_summary`: one-row summary of settings and fit size.
+- `diagnostics`: runtime, feature counts, sample counts, and reproducibility metadata.
+- `effect_decomposition`: estimated direct, indirect, and total-effect summaries.
+- `bootstrap`: optional bootstrap output if requested.
+
+Use helper functions instead of manually indexing the list:
+
+```r
+zentangler_model_summary(fit)
+zentangler_view_summary(fit)
+zentangler_top_mediators(fit, n = 20)
+zentangler_active_mediators(fit, q_threshold = 0.25)
+summarize_zentangler(fit, q_threshold = 0.25)
+```
+
+# Mediator Table Columns
+
+The mediator-level table contains one row per mediator per view.
+
+Common columns include:
+
+- `omics`: assay view name.
+- `mediator`: mediator feature name.
+- `a`: estimated A-path coefficient.
+- `p_a`: A-path p-value.
+- `q_a`: A-path BH-adjusted q-value.
+- `selected_by_screen`: whether the mediator passed the screening stage.
+- `b`: estimated B-path coefficient.
+- `p_b`: B-path p-value.
+- `score`: mediation score, `a * b`.
+- `abs_score`: absolute mediation score.
+- `p_primary`: primary mediator-level p-value used for ranking and multiplicity correction.
+- `q_primary`: BH-adjusted primary q-value.
+
+The active mediator table currently requires finite `q_primary`, `q_primary <= q_threshold`, and nonzero B-path coefficient.
+
+# Bootstrap Uncertainty
+
+Zentangler can run optional bootstrap resampling.
+
+```r
+fit_boot <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_var = "Y",
+  method_preset = "fast_lasso",
+  sis_n = 100,
+  bootstrap_repeats = 100,
+  bootstrap_ci_level = 0.95,
+  bootstrap_seed = 2026
+)
+```
+
+For longitudinal data, use `bootstrap_id` to resample at the subject level rather than the individual sample level.
+
+```r
+fit_boot_subject <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "time_post",
+  y_var = "outcome",
+  method_preset = "fast_lasso",
+  sis_n = 100,
+  bootstrap_repeats = 100,
+  bootstrap_id = "subject_id"
+)
+```
+
+Subject-level bootstrap is important when multiple rows belong to the same participant because resampling individual rows can break the dependence structure.
+
+# Benchmarking Across Simulation Settings
+
+Use `run_intersim_zentangler()` to compare method settings against known simulated truth.
+
+```r
+res <- run_intersim_zentangler(
+  nrep = 10,
+  nsample = 600,
+  fusion_modes = c("early", "intermediate", "late"),
+  screen_method = "sis",
+  sis_n = 200,
+  lambda_choice = "lambda.1se",
+  glmnet_alpha = 1,
+  q_threshold = 0.25
+)
+
+res$summary
+res$detail
+```
+
+The simulation summary reports metrics such as active mediators, true active mediators, false active mediators, precision, recall, FDR, and top-50 truth recovery.
+
+# Interpreting the Current Inference Layer
+
+Zentangler is designed as a transparent method-development package.
+
+The current inference layer includes:
+
+- A-stage p-values from LM/HIMA-like models or MaAsLin2.
+- B-stage p-values from HIMA-style de-biased lasso or refit inference.
+- BH correction through `q_primary`.
+- Optional bootstrap uncertainty for score stability.
+
+The current inference is useful for ranking and exploratory method development. It is not yet a final selective-inference proof for the full workflow because screening, fusion, penalized model selection, and multiplicity correction interact with one another.
+
+For publication-grade method development, simulation studies should evaluate operating characteristics such as FDR, recall, precision, coverage, stability, and robustness across sample sizes, effect sizes, correlation structures, and numbers of views.
+
+# Recommended First Runs
+
+For a fast conservative first pass:
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_var = "Y",
+  method_preset = "fast_lasso",
+  sis_n = 100
+)
+```
+
+For more power in larger samples:
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_var = "Y",
+  method_preset = "elastic_net",
+  sis_n = 200
+)
+```
+
+For no hard screening:
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_var = "Y",
+  method_preset = "full_exploratory"
+)
+```
+
+For longitudinal A-stage modeling:
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "time_post",
+  y_var = "outcome",
+  method_preset = "longitudinal_maaslin2",
+  maaslin2_random_effect = "subject_id",
+  sis_n = 100
+)
+```
+
+# Practical Reporting Checklist
+
+When reporting a Zentangler analysis, include:
+
+- Number of samples after MAE alignment.
+- Number and names of views.
+- Number of features before and after filtering.
+- Exposure, outcome, and covariates.
+- A-stage model: LM/HIMA-like or MaAsLin2.
+- Screening method and `sis_n` if used.
+- Fusion mode: early, intermediate, or late.
+- Penalized model settings: `lambda_choice` and `glmnet_alpha`.
+- B-stage inference method.
+- Q-value threshold used to define active mediators.
+- Whether bootstrap was used and whether it was sample-level or subject-level.
+- Simulation evidence supporting the chosen configuration.
+
+# Session Information
+
+```r
+sessionInfo()
+```

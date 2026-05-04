@@ -28,6 +28,10 @@
 # Preprocessing helpers
 # -----------------------------------------------------------------------------
 
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) y else x
+}
+
 as_numeric_matrix <- function(df, block_name = "block") {
   if (is.matrix(df)) {
     if (!is.numeric(df)) stop(block_name, " must be numeric.")
@@ -355,6 +359,189 @@ zentangler_mae_to_blocks <- function(
   }
 
   list(blocks = blocks, pheno_df = zentangler_mae_coldata(mae), view_map = view_map)
+}
+
+# -----------------------------------------------------------------------------
+# User-facing presets and output helpers
+# -----------------------------------------------------------------------------
+
+zentangler_method_presets <- function() {
+  data.frame(
+    method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2", "full_exploratory"),
+    a_stage_model = c(NA, "lm", "lm", "maaslin2", "lm"),
+    screen_method = c(NA, "sis", "sis", "sis", "none"),
+    fusion_mode = c(NA, "early", "early", "early", "early"),
+    lambda_choice = c(NA, "lambda.1se", "lambda.min", "lambda.1se", "lambda.min"),
+    glmnet_alpha = c(NA, 1, 0.5, 1, 0.5),
+    b_inference = c(NA, "debiased_lasso", "debiased_lasso", "debiased_lasso", "debiased_lasso"),
+    description = c(
+      "Do not override individual options.",
+      "Fast default: LM A-stage, SIS screening, early-fusion lasso.",
+      "Elastic-net power screen: LM A-stage, SIS screening, early fusion, lambda.min, alpha=0.5.",
+      "Longitudinal default: MaAsLin2 A-stage with optional random effects, early-fusion lasso.",
+      "Broad exploratory mode: LM A-stage, no hard screening, early-fusion elastic net."
+    ),
+    stringsAsFactors = FALSE
+  )
+}
+
+zentangler_preset_values <- function(method_preset) {
+  method_preset <- match.arg(
+    method_preset,
+    choices = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2", "full_exploratory")
+  )
+  switch(
+    method_preset,
+    custom = list(),
+    fast_lasso = list(
+      a_stage_model = "lm",
+      screen_method = "sis",
+      fusion_mode = "early",
+      lambda_choice = "lambda.1se",
+      glmnet_alpha = 1,
+      b_inference = "debiased_lasso"
+    ),
+    elastic_net = list(
+      a_stage_model = "lm",
+      screen_method = "sis",
+      fusion_mode = "early",
+      lambda_choice = "lambda.min",
+      glmnet_alpha = 0.5,
+      b_inference = "debiased_lasso"
+    ),
+    longitudinal_maaslin2 = list(
+      a_stage_model = "maaslin2",
+      screen_method = "sis",
+      fusion_mode = "early",
+      lambda_choice = "lambda.1se",
+      glmnet_alpha = 1,
+      b_inference = "debiased_lasso"
+    ),
+    full_exploratory = list(
+      a_stage_model = "lm",
+      screen_method = "none",
+      fusion_mode = "early",
+      lambda_choice = "lambda.min",
+      glmnet_alpha = 0.5,
+      b_inference = "debiased_lasso"
+    )
+  )
+}
+
+apply_zentangler_preset <- function(method_preset, env) {
+  vals <- zentangler_preset_values(method_preset)
+  if (length(vals) == 0) return(invisible(NULL))
+  for (nm in names(vals)) assign(nm, vals[[nm]], envir = env)
+  invisible(NULL)
+}
+
+zentangler_all_mediators <- function(fit) {
+  tab <- fit$combined_mediators
+  if (is.null(tab)) tab <- fit$mediators_all
+  if (is.null(tab)) return(data.frame())
+  rownames(tab) <- NULL
+  tab
+}
+
+zentangler_active_mediators <- function(fit, q_threshold = 0.25, q_col = "q_primary") {
+  tab <- zentangler_all_mediators(fit)
+  if (nrow(tab) == 0) return(tab)
+  if (!(q_col %in% colnames(tab))) stop("q_col not found in mediator table: ", q_col)
+  keep <- is.finite(tab[[q_col]]) & tab[[q_col]] <= q_threshold & is.finite(tab$b) & tab$b != 0
+  out <- tab[keep, , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_top_mediators <- function(
+  fit,
+  n = 20L,
+  order_by = c("abs_score", "q_primary", "p_primary", "score"),
+  decreasing = NULL
+) {
+  order_by <- match.arg(order_by)
+  tab <- zentangler_all_mediators(fit)
+  if (nrow(tab) == 0) return(tab)
+  if (!(order_by %in% colnames(tab))) stop("order_by not found in mediator table: ", order_by)
+  if (is.null(decreasing)) decreasing <- order_by %in% c("abs_score", "score")
+  ord <- order(tab[[order_by]], decreasing = decreasing, na.last = TRUE)
+  out <- tab[ord, , drop = FALSE]
+  out <- out[seq_len(min(as.integer(n), nrow(out))), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_compute_view_summary <- function(tab, q_threshold = 0.25, q_col = "q_primary") {
+  if (is.null(tab) || nrow(tab) == 0) return(data.frame())
+  if (!("omics" %in% colnames(tab))) stop("Mediator table must contain an 'omics' column.")
+  if (!(q_col %in% colnames(tab))) stop("q_col not found in mediator table: ", q_col)
+
+  views <- unique(as.character(tab$omics))
+  out <- lapply(views, function(view) {
+    d <- tab[as.character(tab$omics) == view, , drop = FALSE]
+    selected <- if ("selected_by_screen" %in% colnames(d)) as.logical(d$selected_by_screen) else rep(NA, nrow(d))
+    active <- is.finite(d[[q_col]]) & d[[q_col]] <= q_threshold & is.finite(d$b) & d$b != 0
+    data.frame(
+      omics = view,
+      n_tested = nrow(d),
+      n_screened = sum(selected, na.rm = TRUE),
+      n_active = sum(active, na.rm = TRUE),
+      n_positive_score = sum(active & is.finite(d$score) & d$score > 0, na.rm = TRUE),
+      n_negative_score = sum(active & is.finite(d$score) & d$score < 0, na.rm = TRUE),
+      max_abs_score = if (any(is.finite(d$abs_score))) max(d$abs_score, na.rm = TRUE) else NA_real_,
+      min_q_primary = if (any(is.finite(d[[q_col]]))) min(d[[q_col]], na.rm = TRUE) else NA_real_,
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, out)
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_view_summary <- function(fit, q_threshold = 0.25, q_col = "q_primary") {
+  zentangler_compute_view_summary(zentangler_all_mediators(fit), q_threshold = q_threshold, q_col = q_col)
+}
+
+zentangler_compute_model_summary <- function(settings, diagnostics, tab, q_threshold = 0.25) {
+  active <- if (!is.null(tab) && nrow(tab) > 0) {
+    is.finite(tab$q_primary) & tab$q_primary <= q_threshold & is.finite(tab$b) & tab$b != 0
+  } else {
+    logical(0)
+  }
+  data.frame(
+    method_preset = settings$method_preset %||% NA_character_,
+    input_container = settings$input_container %||% NA_character_,
+    n_samples = diagnostics$n_samples %||% NA_integer_,
+    n_views = settings$n_views %||% NA_integer_,
+    n_features_after_filtering = sum(diagnostics$features_after_filtering %||% 0L),
+    n_screened = sum(diagnostics$screened_counts %||% 0L),
+    n_active_q025 = sum(active, na.rm = TRUE),
+    a_stage_model = settings$a_stage_model %||% NA_character_,
+    fusion_mode = settings$fusion_mode %||% NA_character_,
+    lambda_choice = settings$lambda_choice %||% NA_character_,
+    glmnet_alpha = settings$glmnet_alpha %||% NA_real_,
+    b_inference = settings$b_inference %||% NA_character_,
+    runtime_seconds = diagnostics$runtime_seconds %||% NA_real_,
+    stringsAsFactors = FALSE
+  )
+}
+
+zentangler_model_summary <- function(fit, q_threshold = 0.25) {
+  zentangler_compute_model_summary(
+    settings = fit$settings %||% list(),
+    diagnostics = fit$diagnostics %||% list(),
+    tab = zentangler_all_mediators(fit),
+    q_threshold = q_threshold
+  )
+}
+
+summarize_zentangler <- function(fit, q_threshold = 0.25) {
+  list(
+    model_summary = zentangler_model_summary(fit, q_threshold = q_threshold),
+    view_summary = zentangler_view_summary(fit, q_threshold = q_threshold),
+    top_mediators = zentangler_top_mediators(fit, n = 20L),
+    active_mediators = zentangler_active_mediators(fit, q_threshold = q_threshold)
+  )
 }
 
 # -----------------------------------------------------------------------------
@@ -1442,6 +1629,7 @@ bootstrap_multiview_fit <- function(
   pheno_df,
   x_var,
   y_var,
+  method_preset,
   covariates,
   residualize,
   sis_n,
@@ -1506,6 +1694,7 @@ bootstrap_multiview_fit <- function(
         pheno_df = bt$pheno_df,
         x_var = x_var,
         y_var = y_var,
+        method_preset = method_preset,
         covariates = covariates,
         residualize = residualize,
         sis_n = sis_n,
@@ -1572,6 +1761,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   pheno_df,
   x_var,
   y_var,
+  method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2", "full_exploratory"),
   covariates = NULL,
   residualize = FALSE,
   sis_n = NULL,
@@ -1600,6 +1790,9 @@ fit_multiview_parallel_zentangler_blocks <- function(
   bootstrap_seed = seed + 10000L,
   bootstrap_id = NULL
 ) {
+  start_time <- Sys.time()
+  method_preset <- match.arg(method_preset)
+  apply_zentangler_preset(method_preset, environment())
   sis_rank <- match.arg(sis_rank)
   screen_method <- match.arg(screen_method)
   a_stage_model <- match.arg(a_stage_model)
@@ -1610,9 +1803,12 @@ fit_multiview_parallel_zentangler_blocks <- function(
   b_inference <- match.arg(b_inference)
   set.seed(seed)
 
+  feature_counts_before <- vapply(blocks, function(x) ncol(as.data.frame(x)), integer(1))
+
   needed <- unique(c(x_var, y_var, covariates, bootstrap_id, maaslin2_random_effect))
   al <- align_samples_multiview_blocks(blocks, pheno_df, needed_pheno_cols = needed)
   blocks0 <- al$blocks
+  feature_counts_after <- vapply(blocks0, ncol, integer(1))
   X_raw <- al$pheno[[x_var]]
   Y_raw <- al$pheno[[y_var]]
   if (!is.numeric(X_raw) || !is.numeric(Y_raw)) stop("x_var and y_var must be numeric.")
@@ -1742,6 +1938,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
       pheno_df = al$pheno,
       x_var = x_var,
       y_var = y_var,
+      method_preset = method_preset,
       covariates = covariates,
       residualize = residualize,
       sis_n = sis_n,
@@ -1799,47 +1996,83 @@ fit_multiview_parallel_zentangler_blocks <- function(
   })
   names(views_out) <- names(blocks_model)
 
+  screened_counts <- vapply(screens, function(x) length(x$selected), integer(1))
+  active_counts <- vapply(view_tables, function(x) sum(is.finite(x$b) & x$b != 0, na.rm = TRUE), integer(1))
+  end_time <- Sys.time()
+  diagnostics <- list(
+    package_version = tryCatch(as.character(utils::packageVersion("Zentangler")), error = function(e) NA_character_),
+    r_version = paste(R.version$major, R.version$minor, sep = "."),
+    started = start_time,
+    finished = end_time,
+    runtime_seconds = as.numeric(difftime(end_time, start_time, units = "secs")),
+    n_samples_input = nrow(pheno_df),
+    n_samples = length(al$sample_ids),
+    n_views = length(blocks_model),
+    features_before_filtering = feature_counts_before,
+    features_after_filtering = feature_counts_after,
+    screened_counts = screened_counts,
+    active_b_counts = active_counts,
+    bootstrap_failures = if (!is.null(bootstrap)) bootstrap$failures else character(0)
+  )
+  settings_out <- list(
+    method_preset = method_preset,
+    input_container = "matrix_blocks",
+    x_var = x_var,
+    y_var = y_var,
+    view_names = names(blocks_model),
+    n_views = length(blocks_model),
+    covariates = covariates,
+    residualize = residualize,
+    sis_n = sis_n,
+    sis_rank = sis_rank,
+    screen_method = screen_method,
+    a_stage_model = a_stage_model,
+    maaslin2_random_effect = maaslin2_random_effect,
+    maaslin2_normalization = maaslin2_normalization,
+    maaslin2_transform = maaslin2_transform,
+    maaslin2_analysis_method = maaslin2_analysis_method,
+    maaslin2_standardize = maaslin2_standardize,
+    maaslin2_output_dir = maaslin2_output_dir,
+    fusion_mode = fusion_mode,
+    y_family = y_family,
+    lambda_choice = lambda_choice,
+    glmnet_alpha = glmnet_alpha,
+    glmnet_penalty = glmnet_alpha_label(if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha),
+    glmnet_alpha_used_in_y_stage = if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha,
+    b_inference = b_inference,
+    b_inference_method = p_b_infer$method,
+    b_inference_note = if (identical(b_inference, "debiased_lasso") && !isTRUE(all.equal(glmnet_alpha, 1))) {
+      "B-path p-values use the current HIMA-style de-biased lasso routine; elastic-net alpha changes early/late Y-stage coefficient fitting, not the de-biased inference formula."
+    } else {
+      NA_character_
+    },
+    debias_max_targets = debias_max_targets,
+    y_model_method = yfit$method,
+    bootstrap_repeats = as.integer(bootstrap_repeats),
+    bootstrap_ci_level = bootstrap_ci_level,
+    bootstrap_seed = bootstrap_seed,
+    bootstrap_id = bootstrap_id
+  )
+  mediators_active_default <- zentangler_active_mediators(list(combined_mediators = combined), q_threshold = 0.25)
+  view_summary_default <- zentangler_compute_view_summary(combined, q_threshold = 0.25)
+  model_summary_default <- zentangler_compute_model_summary(
+    settings = settings_out,
+    diagnostics = diagnostics,
+    tab = combined,
+    q_threshold = 0.25
+  )
+
   list(
-    settings = list(
-      x_var = x_var,
-      y_var = y_var,
-      view_names = names(blocks_model),
-      n_views = length(blocks_model),
-      covariates = covariates,
-      residualize = residualize,
-      sis_n = sis_n,
-      sis_rank = sis_rank,
-      screen_method = screen_method,
-      a_stage_model = a_stage_model,
-      maaslin2_random_effect = maaslin2_random_effect,
-      maaslin2_normalization = maaslin2_normalization,
-      maaslin2_transform = maaslin2_transform,
-      maaslin2_analysis_method = maaslin2_analysis_method,
-      maaslin2_standardize = maaslin2_standardize,
-      maaslin2_output_dir = maaslin2_output_dir,
-      fusion_mode = fusion_mode,
-      y_family = y_family,
-      lambda_choice = lambda_choice,
-      glmnet_alpha = glmnet_alpha,
-      glmnet_penalty = glmnet_alpha_label(if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha),
-      glmnet_alpha_used_in_y_stage = if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha,
-      b_inference = b_inference,
-      b_inference_method = p_b_infer$method,
-      b_inference_note = if (identical(b_inference, "debiased_lasso") && !isTRUE(all.equal(glmnet_alpha, 1))) {
-        "B-path p-values use the current HIMA-style de-biased lasso routine; elastic-net alpha changes early/late Y-stage coefficient fitting, not the de-biased inference formula."
-      } else {
-        NA_character_
-      },
-      debias_max_targets = debias_max_targets,
-      y_model_method = yfit$method,
-      bootstrap_repeats = as.integer(bootstrap_repeats),
-      bootstrap_ci_level = bootstrap_ci_level,
-      bootstrap_seed = bootstrap_seed,
-      bootstrap_id = bootstrap_id
-    ),
+    settings = settings_out,
     sample_ids = rownames(al$pheno),
+    diagnostics = diagnostics,
     views = views_out,
     combined_mediators = combined,
+    mediators_all = combined,
+    mediators_active = mediators_active_default,
+    mediators_top = zentangler_top_mediators(list(combined_mediators = combined), n = 20L),
+    view_summary = view_summary_default,
+    model_summary = model_summary_default,
     x_to_y_coef = yfit$x_coef,
     effect_decomposition = effect_decomposition,
     bootstrap = bootstrap,
@@ -1853,6 +2086,7 @@ fit_multiview_parallel_zentangler <- function(
   y_var,
   view_names = NULL,
   assay_names = NULL,
+  method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2", "full_exploratory"),
   covariates = NULL,
   residualize = FALSE,
   sis_n = NULL,
@@ -1891,6 +2125,7 @@ fit_multiview_parallel_zentangler <- function(
   # the modeling code.
   duplicate_primary <- match.arg(duplicate_primary)
   screen_method <- match.arg(screen_method)
+  method_preset <- match.arg(method_preset)
 
   inputs <- zentangler_mae_to_blocks(
     mae = mae,
@@ -1905,6 +2140,7 @@ fit_multiview_parallel_zentangler <- function(
     pheno_df = inputs$pheno_df,
     x_var = x_var,
     y_var = y_var,
+    method_preset = method_preset,
     covariates = covariates,
     residualize = residualize,
     sis_n = sis_n,
@@ -1936,5 +2172,6 @@ fit_multiview_parallel_zentangler <- function(
 
   fit$settings$input_container <- "MultiAssayExperiment"
   fit$settings$mae_view_map <- inputs$view_map
+  fit$model_summary <- zentangler_model_summary(fit)
   fit
 }

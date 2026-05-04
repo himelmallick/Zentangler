@@ -8,6 +8,8 @@ fit_multiview_parallel_zentangler(
   y_var,
   view_names = NULL,
   assay_names = NULL,
+  method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2",
+    "full_exploratory"),
   covariates = NULL,
   residualize = FALSE,
   sis_n = NULL,
@@ -45,6 +47,7 @@ fit_multiview_parallel_zentangler(
 \item{y_var}{Name of the outcome column in \code{colData(mae)}. Must be numeric.}
 \item{view_names}{Optional character vector of MAE experiment names to use. Defaults to all experiments.}
 \item{assay_names}{Optional named character vector of assay names, one per view. Defaults to the first assay in each experiment.}
+\item{method_preset}{Optional named preset. \code{"custom"} preserves individual arguments. Other presets set coherent defaults for common workflows. See \code{zentangler_method_presets()}.}
 \item{covariates}{Optional covariate column names in \code{colData(mae)}.}
 \item{residualize}{Logical. If \code{TRUE}, residualize exposure, outcome, and mediators against covariates before fitting.}
 \item{sis_n}{Number of mediators to retain per view after screening. If \code{NULL}, a HIMA-style default is used.}
@@ -76,7 +79,8 @@ fit_multiview_parallel_zentangler(
 \item{fill_nonfinite_zero}{Logical. If \code{TRUE}, replace non-finite assay values with zero before filtering.}
 }
 \value{
-A list with run settings, aligned sample IDs, per-view mediator tables, a combined mediator ranking table,
+A list with run settings, diagnostics, aligned sample IDs, per-view mediator tables, cleaner mediator aliases
+(\code{mediators_all}, \code{mediators_active}, \code{mediators_top}), view/model summaries,
 exploratory effect summaries, optional bootstrap summaries, and optional model fits.
 }
 \description{

@@ -16,3 +16,6 @@
 ^Zentangler_.*[.]tar[.]gz$
 ^[.][.]Rcheck$
 ^Zentangler[.]Rcheck$
+
+^zentangler_simmba_results$
+^zentangler_intersim_.*[.]csv$
