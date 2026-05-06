@@ -32,6 +32,10 @@
   if (is.null(x) || length(x) == 0) y else x
 }
 
+validate_fdr_method <- function(fdr_method) {
+  match.arg(fdr_method, choices = c("BH", "BY"))
+}
+
 as_numeric_matrix <- function(df, block_name = "block") {
   if (is.matrix(df)) {
     if (!is.numeric(df)) stop(block_name, " must be numeric.")
@@ -520,6 +524,7 @@ zentangler_compute_model_summary <- function(settings, diagnostics, tab, q_thres
     fusion_mode = settings$fusion_mode %||% NA_character_,
     lambda_choice = settings$lambda_choice %||% NA_character_,
     glmnet_alpha = settings$glmnet_alpha %||% NA_real_,
+    fdr_method = settings$fdr_method %||% NA_character_,
     b_inference = settings$b_inference %||% NA_character_,
     runtime_seconds = diagnostics$runtime_seconds %||% NA_real_,
     stringsAsFactors = FALSE
@@ -558,10 +563,12 @@ hima_screen_mediators <- function(
   C = NULL,
   sis_n = NULL,
   rank_by = c("abs_a", "pvalue"),
-  screen_method = c("sis", "none")
+  screen_method = c("sis", "none"),
+  fdr_method = c("BH", "BY")
 ) {
   rank_by <- match.arg(rank_by)
   screen_method <- match.arg(screen_method)
+  fdr_method <- validate_fdr_method(fdr_method)
 
   n <- nrow(M)
   p <- ncol(M)
@@ -587,7 +594,7 @@ hima_screen_mediators <- function(
     }
   }
 
-  tab$q_a <- p.adjust(tab$p_a, method = "BH")
+  tab$q_a <- p.adjust(tab$p_a, method = fdr_method)
   ord <- if (rank_by == "abs_a") {
     order(abs(tab$a_hat), decreasing = TRUE, na.last = TRUE)
   } else {
@@ -631,7 +638,8 @@ hima_screen_mediators_maaslin2 <- function(
   transform = "NONE",
   analysis_method = "LM",
   standardize = FALSE,
-  output_dir = NULL
+  output_dir = NULL,
+  fdr_method = c("BH", "BY")
 ) {
   # MaAsLin2 A-stage:
   #   mediator_j ~ X + fixed covariates + optional random effects
@@ -640,6 +648,7 @@ hima_screen_mediators_maaslin2 <- function(
   # exposure-to-mediator leg should account for subject-level clustering.
   rank_by <- match.arg(rank_by)
   screen_method <- match.arg(screen_method)
+  fdr_method <- validate_fdr_method(fdr_method)
 
   if (!requireNamespace("Maaslin2", quietly = TRUE)) {
     stop("Package 'Maaslin2' is required when a_stage_model = 'maaslin2'.")
@@ -735,9 +744,9 @@ hima_screen_mediators_maaslin2 <- function(
     }
   }
 
-  q_bh <- p.adjust(tab$p_a, method = "BH")
-  missing_q <- !is.finite(tab$q_a)
-  tab$q_a[missing_q] <- q_bh[missing_q]
+  # Recompute A-stage q-values with the requested FDR procedure so LM and
+  # MaAsLin2 A-stage outputs are comparable inside Zentangler.
+  tab$q_a <- p.adjust(tab$p_a, method = fdr_method)
 
   ord <- if (rank_by == "abs_a") {
     order(abs(tab$a_hat), decreasing = TRUE, na.last = TRUE)
@@ -1456,7 +1465,8 @@ infer_p_b_multiview <- function(
   )
 }
 
-assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec) {
+assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec, fdr_method = c("BH", "BY")) {
+  fdr_method <- validate_fdr_method(fdr_method)
   a_map <- setNames(screen_tab$a_hat, screen_tab$mediator)
   p_a_map <- setNames(screen_tab$p_a, screen_tab$mediator)
   q_a_map <- setNames(screen_tab$q_a, screen_tab$mediator)
@@ -1482,7 +1492,7 @@ assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec) {
   out$joint_p_ab <- NA_real_
   out$joint_p_ab[both_legs] <- pmax(out$p_a[both_legs], out$p_b[both_legs])
   out$p_primary <- out$joint_p_ab
-  out$q_primary <- p.adjust(out$p_primary, method = "BH")
+  out$q_primary <- p.adjust(out$p_primary, method = fdr_method)
 
   out <- out[order(out$abs_score, decreasing = TRUE), ]
   rownames(out) <- NULL
@@ -1646,6 +1656,7 @@ bootstrap_multiview_fit <- function(
   y_family,
   lambda_choice,
   glmnet_alpha,
+  fdr_method,
   b_inference,
   debias_max_targets,
   coop_rho,
@@ -1711,6 +1722,7 @@ bootstrap_multiview_fit <- function(
         y_family = y_family,
         lambda_choice = lambda_choice,
         glmnet_alpha = glmnet_alpha,
+        fdr_method = fdr_method,
         b_inference = b_inference,
         debias_max_targets = debias_max_targets,
         coop_rho = coop_rho,
@@ -1778,6 +1790,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
+  fdr_method = c("BH", "BY"),
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -1800,6 +1813,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
   glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
+  fdr_method <- validate_fdr_method(fdr_method)
   b_inference <- match.arg(b_inference)
   set.seed(seed)
 
@@ -1846,6 +1860,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
         sis_n = sis_n,
         rank_by = sis_rank,
         screen_method = screen_method,
+        fdr_method = fdr_method,
         normalization = maaslin2_normalization,
         transform = maaslin2_transform,
         analysis_method = maaslin2_analysis_method,
@@ -1859,7 +1874,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
         C = C_model,
         sis_n = sis_n,
         rank_by = sis_rank,
-        screen_method = screen_method
+        screen_method = screen_method,
+        fdr_method = fdr_method
       )
     }
   })
@@ -1906,7 +1922,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     hit_p <- intersect(names(p_b_selected[[view]]), names(p_full))
     p_full[hit_p] <- p_b_selected[[view]][hit_p]
 
-    assemble_mediator_table(screens[[view]]$table, b_vec = b_full, p_b_vec = p_full)
+    assemble_mediator_table(screens[[view]]$table, b_vec = b_full, p_b_vec = p_full, fdr_method = fdr_method)
   })
   names(view_tables) <- names(blocks_model)
 
@@ -1917,7 +1933,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     })
   )
   combined$p_primary <- combined$joint_p_ab
-  combined$q_primary <- p.adjust(combined$p_primary, method = "BH")
+  combined$q_primary <- p.adjust(combined$p_primary, method = fdr_method)
   combined <- combined[order(combined$abs_score, decreasing = TRUE), , drop = FALSE]
   rownames(combined) <- NULL
 
@@ -1955,6 +1971,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
       y_family = y_family,
       lambda_choice = lambda_choice,
       glmnet_alpha = glmnet_alpha,
+      fdr_method = fdr_method,
       b_inference = b_inference,
       debias_max_targets = debias_max_targets,
       coop_rho = coop_rho,
@@ -2037,6 +2054,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     y_family = y_family,
     lambda_choice = lambda_choice,
     glmnet_alpha = glmnet_alpha,
+    fdr_method = fdr_method,
     glmnet_penalty = glmnet_alpha_label(if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha),
     glmnet_alpha_used_in_y_stage = if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha,
     b_inference = b_inference,
@@ -2103,6 +2121,7 @@ fit_multiview_parallel_zentangler <- function(
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
+  fdr_method = c("BH", "BY"),
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -2126,6 +2145,7 @@ fit_multiview_parallel_zentangler <- function(
   duplicate_primary <- match.arg(duplicate_primary)
   screen_method <- match.arg(screen_method)
   method_preset <- match.arg(method_preset)
+  fdr_method <- validate_fdr_method(fdr_method)
 
   inputs <- zentangler_mae_to_blocks(
     mae = mae,
@@ -2157,6 +2177,7 @@ fit_multiview_parallel_zentangler <- function(
     y_family = y_family,
     lambda_choice = lambda_choice,
     glmnet_alpha = glmnet_alpha,
+    fdr_method = fdr_method,
     b_inference = b_inference,
     debias_max_targets = debias_max_targets,
     coop_rho = coop_rho,

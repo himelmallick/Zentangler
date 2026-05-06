@@ -129,6 +129,7 @@ screen_method <- as.character(row_value(row, "screen_method", "sis"))
 sis_n <- if (identical(screen_method, "none")) NULL else as_int_or_null(row_value(row, "sis_n", NULL))
 glmnet_alpha <- as_num_or_null(row_value(row, "glmnet_alpha", 1))
 if (is.null(glmnet_alpha)) glmnet_alpha <- 1
+fdr_method <- as.character(row_value(row, "fdr_method", "BH"))
 
 maaslin2_random_effect <- as_chr_or_null(row_value(row, "maaslin2_random_effect", NULL))
 maaslin2_normalization <- as.character(row_value(row, "maaslin2_normalization", "NONE"))
@@ -153,7 +154,7 @@ tag <- sprintf(
   safe_tag(row_value(row, "sis_n", NA)),
   safe_tag(row_value(row, "lambda_choice", "lambda.1se")),
   gsub("\\.", "p", as.character(glmnet_alpha)),
-  gsub("\\.", "p", as.character(row_value(row, "q_threshold", 0.25))),
+  paste0(safe_tag(fdr_method), gsub("\\.", "p", as.character(row_value(row, "q_threshold", 0.25)))),
   safe_tag(row_value(row, "snr", NA)),
   safe_tag(row_value(row, "n_pathways", NA)),
   gsub("\\.", "p", as.character(row_value(row, "TIE", 1)))
@@ -200,6 +201,7 @@ res <- try(
     maaslin2_standardize = maaslin2_standardize,
     maaslin2_output_dir = maaslin2_output_dir,
     q_threshold = as.numeric(row_value(row, "q_threshold", 0.25)),
+    fdr_method = fdr_method,
     top_n = as.integer(row_value(row, "top_n", 50L)),
     seed = as.integer(row_value(row, "seed", 1L)),
     p.train = as.numeric(row_value(row, "p_train", 0.70)),

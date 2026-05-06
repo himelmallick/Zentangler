@@ -13,6 +13,7 @@ run_intersim_zentangler(
   screen_method = c("sis", "none"),
   a_stage_model = c("lm", "maaslin2"),
   q_threshold = 0.25,
+  fdr_method = c("BH", "BY"),
   top_n = 50L,
   seed = 1234,
   p.train = 0.7,
@@ -46,7 +47,8 @@ run_intersim_zentangler(
 \item{sis_rank}{Ranking criterion for SIS.}
 \item{screen_method}{Screening method passed to \code{fit_multiview_parallel_zentangler()}. Use \code{"none"} to skip hard SIS.}
 \item{a_stage_model}{A-stage model: \code{"lm"} for HIMA-like univariate linear models or \code{"maaslin2"} for MaAsLin2 fixed/random-effect screening.}
-\item{q_threshold}{BH q-value threshold used to define active mediators.}
+\item{q_threshold}{q-value threshold used to define active mediators.}
+\item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
 \item{top_n}{Number of top-ranked mediators used for top-k truth recovery.}
 \item{seed}{Random seed.}
 \item{p.train}{Training split proportion passed to \code{gen_simmba()}.}

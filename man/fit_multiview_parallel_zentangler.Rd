@@ -26,6 +26,7 @@ fit_multiview_parallel_zentangler(
   y_family = c("gaussian", "binomial"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
+  fdr_method = c("BH", "BY"),
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -64,6 +65,7 @@ fit_multiview_parallel_zentangler(
 \item{y_family}{Outcome family: Gaussian or binomial. Intermediate cooperative fusion currently supports Gaussian outcomes.}
 \item{lambda_choice}{Cross-validated glmnet lambda choice.}
 \item{glmnet_alpha}{Glmnet mixing parameter for early and late fusion. Use \code{1} for lasso, values between \code{0} and \code{1} for elastic net, and \code{0} for ridge. Intermediate fusion currently uses the cooperative lasso-style update.}
+\item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
 \item{b_inference}{B-path inference method.}
 \item{debias_max_targets}{Maximum number of active B-path targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}

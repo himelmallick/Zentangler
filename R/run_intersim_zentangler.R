@@ -11,7 +11,10 @@
 #' @param sis_rank Ranking criterion for SIS.
 #' @param screen_method Screening method passed to \code{fit_multiview_parallel_zentangler()}.
 #' @param a_stage_model A-stage model: \code{"lm"} for HIMA-like univariate linear models or \code{"maaslin2"} for MaAsLin2 fixed/random-effect screening.
-#' @param q_threshold BH q-value threshold used to define active mediators.
+#' @param q_threshold q-value threshold used to define active mediators.
+#' @param fdr_method Multiple-testing correction used to compute q-values.
+#'   Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for
+#'   Benjamini-Yekutieli.
 #' @param top_n Number of top-ranked mediators used for top-k truth recovery.
 #' @param seed Random seed passed to \code{gen_simmba()} and model fits.
 #' @param p.train Training split proportion passed to \code{gen_simmba()}.
@@ -47,6 +50,7 @@ run_intersim_zentangler <- function(
   screen_method = c("sis", "none"),
   a_stage_model = c("lm", "maaslin2"),
   q_threshold = 0.25,
+  fdr_method = c("BH", "BY"),
   top_n = 50L,
   seed = 1234,
   p.train = 0.7,
@@ -81,6 +85,7 @@ run_intersim_zentangler <- function(
   outcome.type <- match.arg(outcome.type)
   lambda_choice <- match.arg(lambda_choice)
   glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
+  fdr_method <- validate_fdr_method(fdr_method)
   b_inference <- match.arg(b_inference)
 
   if (identical(outcome.type, "binary")) {
@@ -121,7 +126,9 @@ run_intersim_zentangler <- function(
         message("Running rep ", rep_i, " / ", nrep, ", fusion = ", fusion_mode,
                 ", screen_method = ", screen_method,
                 ", a_stage_model = ", a_stage_model,
-                ", glmnet_alpha = ", glmnet_alpha)
+                ", glmnet_alpha = ", glmnet_alpha,
+                ", fdr_method = ", fdr_method,
+                ", q_threshold = ", q_threshold)
       }
 
       fit_i <- try(
@@ -147,6 +154,7 @@ run_intersim_zentangler <- function(
           y_family = y_family,
           lambda_choice = lambda_choice,
           glmnet_alpha = glmnet_alpha,
+          fdr_method = fdr_method,
           b_inference = b_inference,
           debias_max_targets = debias_max_targets,
           coop_rho = coop_rho,
@@ -203,6 +211,7 @@ run_intersim_zentangler <- function(
       screen_method = screen_method,
       a_stage_model = a_stage_model,
       q_threshold = q_threshold,
+      fdr_method = fdr_method,
       top_n = top_n,
       seed = seed,
       p.train = p.train,

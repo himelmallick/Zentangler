@@ -10,7 +10,7 @@
 #
 # Optional profiles:
 #   --profile focused   small smoke/iteration grid, about 320 jobs
-#   --profile hpc5000   default, continuous-outcome method grid, about 2400 jobs
+#   --profile hpc5000   default, continuous-outcome method grid
 #   --profile expanded  alias for hpc5000 to avoid accidental huge grids
 #   --profile full      larger follow-up grid, includes nonlinear continuous settings
 #
@@ -60,7 +60,8 @@ if (identical(profile, "focused")) {
   a_stage_models <- c("lm", "maaslin2")
   lambda_choices <- c("lambda.1se", "lambda.min")
   glmnet_alpha_values <- c(1, 0.5)
-  q_thresholds <- c(0.25)
+  fdr_methods <- c("BH", "BY")
+  q_thresholds <- seq(0.05, 0.25, by = 0.05)
   sis_n_values <- c(100L)
   sis_rank_values <- c("abs_a")
   include_screen_none <- TRUE
@@ -77,19 +78,20 @@ if (identical(profile, "focused")) {
   )
   b_inference_values <- c("debiased_lasso")
 } else if (identical(profile, "hpc5000")) {
-  # Count logic:
-  # base model rows = 120
-  # screening rows = 5: SIS 100/200 x abs_a/pvalue + none
+  # Count logic with current default settings:
+  # base model rows = 1000 after adding BH/BY FDR choices and five q cutoffs
+  # screening rows = 9: SIS 100/200/250/500 x abs_a/pvalue + none
   # outcome rows = 1: continuous LM only
   # signal rows = 4: snr 1/2 x pathways 10/30, TIE fixed at 1
-  # total = 120 * 5 * 1 * 4 = 2400 jobs
-  nsample_values <- c(300L, 600L, 1000L)
+  # total = 1000 * 9 * 1 * 4 = 36000 jobs
+  nsample_values <- c(500L, 1000L, 1500L, 2000L, 3000L)
   nrep_per_job <- 10L
   a_stage_models <- c("lm", "maaslin2")
   lambda_choices <- c("lambda.1se", "lambda.min")
   glmnet_alpha_values <- c(1, 0.5) # 1 = lasso, 0.5 = elastic net
-  q_thresholds <- c(0.10, 0.25)
-  sis_n_values <- c(100L, 200L)
+  fdr_methods <- c("BH", "BY")
+  q_thresholds <- seq(0.05, 0.25, by = 0.05)
+  sis_n_values <- c(100L, 200L, 250L, 500L)
   sis_rank_values <- c("abs_a", "pvalue")
   include_screen_none <- TRUE
   outcome_grid <- expand.grid(
@@ -112,7 +114,8 @@ if (identical(profile, "focused")) {
   a_stage_models <- c("lm", "maaslin2")
   lambda_choices <- c("lambda.1se", "lambda.min")
   glmnet_alpha_values <- c(1, 0.75, 0.5)
-  q_thresholds <- c(0.10, 0.20, 0.25)
+  fdr_methods <- c("BH", "BY")
+  q_thresholds <- seq(0.05, 0.25, by = 0.05)
   sis_n_values <- c(50L, 100L, 200L)
   sis_rank_values <- c("abs_a", "pvalue")
   include_screen_none <- TRUE
@@ -157,6 +160,7 @@ early_late_grid <- expand.grid(
   fusion_mode = c("early", "late"),
   lambda_choice = lambda_choices,
   glmnet_alpha = glmnet_alpha_values,
+  fdr_method = fdr_methods,
   q_threshold = q_thresholds,
   b_inference = b_inference_values,
   stringsAsFactors = FALSE
@@ -170,6 +174,7 @@ intermediate_grid <- expand.grid(
   fusion_mode = "intermediate",
   lambda_choice = lambda_choices,
   glmnet_alpha = 1,
+  fdr_method = fdr_methods,
   q_threshold = q_thresholds,
   b_inference = b_inference_values,
   stringsAsFactors = FALSE
@@ -212,6 +217,7 @@ grid <- grid[order(
   grid$lambda_choice,
   grid$glmnet_alpha,
   grid$b_inference,
+  grid$fdr_method,
   grid$q_threshold,
   grid$snr,
   grid$n_pathways,
@@ -224,7 +230,7 @@ grid <- grid[, c(
   "job_id", "seed", "grid_profile", "nrep", "nsample", "p_train",
   "method_preset", "a_stage_model", "fusion_mode",
   "screen_method", "sis_n", "sis_rank",
-  "lambda_choice", "glmnet_alpha", "q_threshold", "top_n",
+  "lambda_choice", "glmnet_alpha", "fdr_method", "q_threshold", "top_n",
   "outcome_type", "ygen_mode", "b_inference", "debias_max_targets",
   "coop_rho", "bootstrap_repeats", "residualize",
   "maaslin2_random_effect", "maaslin2_normalization", "maaslin2_transform",
@@ -241,6 +247,8 @@ cat("Fusion modes:", paste(unique(grid$fusion_mode), collapse = ", "), "\n")
 cat("Screening:", paste(unique(grid$screen_method), collapse = ", "), "\n")
 cat("SIS ranks:", paste(unique(grid$sis_rank), collapse = ", "), "\n")
 cat("glmnet alpha values:", paste(sort(unique(grid$glmnet_alpha)), collapse = ", "), "\n")
+cat("FDR methods:", paste(unique(grid$fdr_method), collapse = ", "), "\n")
+cat("q thresholds:", paste(sort(unique(grid$q_threshold)), collapse = ", "), "\n")
 cat("Outcome types:", paste(unique(grid$outcome_type), collapse = ", "), "\n")
 cat("Y generation modes:", paste(unique(grid$ygen_mode), collapse = ", "), "\n")
 cat("Signal-to-noise values:", paste(sort(unique(grid$snr)), collapse = ", "), "\n")
