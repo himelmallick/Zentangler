@@ -36,6 +36,8 @@ fit <- fit_multiview_parallel_zentangler(
   y_var = "Y",
   method_preset = "fast_lasso",
   sis_n = 50,
+  fdr_method = "BH",
+  fdr_scope = "global",
   bootstrap_repeats = 100
 )
 
@@ -110,6 +112,8 @@ where:
 - `b_jk` is the mediator-to-outcome coefficient from the multiview outcome model
 - `score_jk` is the mediation ranking score
 
+The final mediator table contains both global and view-specific q-values so users can decide whether the multiple-testing family should be all mediators together or mediators within each assay view.
+
 ## A-Stage Options
 
 The default A-stage is a HIMA-like univariate linear model:
@@ -181,6 +185,42 @@ fusion_mode = "late"
 
 ## Inference Options
 
+### Multiple-Testing Scope
+
+Zentangler supports two final FDR scopes:
+
+```r
+fdr_scope = "global"
+```
+
+computes the final `q_primary` across all candidate mediators from all assay views.
+
+```r
+fdr_scope = "within_view"
+```
+
+computes the final `q_primary` separately within each assay view.
+
+The output table always keeps both columns:
+
+- `q_primary_global`: FDR correction across all views together
+- `q_primary_within_view`: FDR correction separately within each view
+- `q_primary`: the q-value family selected by `fdr_scope`
+
+This lets the same fitted model support two interpretations:
+
+- global FDR asks, "Among all active mediators across the entire multiview study, what proportion may be false discoveries?"
+- within-view FDR asks, "Within each assay view, what proportion of active mediators may be false discoveries?"
+
+The correction method is controlled separately:
+
+```r
+fdr_method = "BH"  # Benjamini-Hochberg
+fdr_method = "BY"  # Benjamini-Yekutieli
+```
+
+`BH` is the usual default. `BY` is more conservative and can be useful when dependence across tests is a major concern.
+
 ### De-Biased Lasso B-Path Inference
 
 ```r
@@ -250,17 +290,35 @@ fit <- fit_multiview_parallel_zentangler(
   screen_method = "sis",
   fusion_mode = "early",
   glmnet_alpha = 0.75,
+  fdr_method = "BH",
+  fdr_scope = "global",
   b_inference = "debiased_lasso"
 )
 
 head(fit$combined_mediators)
 ```
 
-A longer simulation runner is installed with the package:
+The simulation benchmark runner can evaluate multiple q-thresholds from one fitted model. This is useful on HPC because changing only the q cutoff should not require refitting the same model repeatedly.
 
 ```r
-system.file("scripts/run_simmba_zentangler_lasso_fusion.R", package = "Zentangler")
+res <- run_intersim_zentangler(
+  nrep = 10,
+  nsample = 1000,
+  fusion_modes = c("early", "intermediate", "late"),
+  a_stage_model = "maaslin2",
+  screen_method = "sis",
+  sis_n = 200,
+  lambda_choice = "lambda.min",
+  glmnet_alpha = 0.5,
+  fdr_method = "BH",
+  fdr_scope = "both",
+  q_threshold = seq(0.05, 0.25, by = 0.05)
+)
+
+res$summary
 ```
+
+With `fdr_scope = "both"`, the summary reports both global and within-view q-value evaluations. With a threshold vector, the summary reports one row per threshold rather than launching a separate fit per threshold.
 
 ## Output Object
 
@@ -278,6 +336,8 @@ The fit object is a list containing:
 - `model_summary`: one-row summary of the run configuration and diagnostics
 - `x_to_y_coef`: direct exposure coefficient from the selected mediator model
 - `settings$glmnet_alpha`: Y-stage `glmnet` mixing value used for early/late fusion
+- `settings$fdr_method`: multiple-testing correction used for q-values (`"BH"` or `"BY"`)
+- `settings$fdr_scope`: final q-value scope used by `q_primary` (`"global"` or `"within_view"`)
 - `effect_decomposition`: direct, indirect, and total-effect summaries
 - `bootstrap`: bootstrap matrices and uncertainty summaries when enabled
 - `fits`: fitted model objects when `return_fits = TRUE`
@@ -296,6 +356,7 @@ zentangler_view_summary(fit)
 zentangler_top_mediators(fit, n = 20)
 zentangler_active_mediators(fit, q_threshold = 0.25)
 summarize_zentangler(fit)
+summarize_zentangler(fit, q_threshold = seq(0.05, 0.25, by = 0.05))$threshold_summary
 ```
 
 Common columns include:
@@ -304,14 +365,16 @@ Common columns include:
 - `mediator`: feature name
 - `a`: exposure-to-mediator estimate
 - `p_a`: a-path p-value
-- `q_a`: BH-adjusted a-path p-value
+- `q_a`: FDR-adjusted a-path p-value using `settings$fdr_method`
 - `b`: mediator-to-outcome estimate
 - `p_b`: b-path p-value
 - `selected_by_screen`: whether the mediator was retained for the B-stage
 - `score`: `a * b`
 - `abs_score`: absolute mediation score
 - `p_primary`: primary joint evidence p-value
-- `q_primary`: BH-adjusted primary p-value
+- `q_primary_global`: FDR-adjusted primary p-value across all views
+- `q_primary_within_view`: FDR-adjusted primary p-value separately within each assay view
+- `q_primary`: selected final q-value according to `settings$fdr_scope`
 
 ## Package Functions
 
@@ -321,7 +384,7 @@ Common columns include:
 - `zentangler_active_mediators()`: inspect active mediators under a q-value threshold
 - `zentangler_view_summary()`: summarize tested/screened/active mediators by view
 - `zentangler_model_summary()`: summarize model settings and diagnostics
-- `summarize_zentangler()`: return model, view, top, and active summaries
+- `summarize_zentangler()`: return model, view, threshold, top, and active summaries
 - `gen_simmba()`: generate MAE simulation data with mediation truth
 - `run_intersim_zentangler()`: run InterSIM/SIMMBA simulation benchmarks across fusion modes
 - `trigger_InterSIM()`: generate the null InterSIM data object used by the simulator

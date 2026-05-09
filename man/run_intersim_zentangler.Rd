@@ -14,6 +14,7 @@ run_intersim_zentangler(
   a_stage_model = c("lm", "maaslin2"),
   q_threshold = 0.25,
   fdr_method = c("BH", "BY"),
+  fdr_scope = c("global", "within_view", "both"),
   top_n = 50L,
   seed = 1234,
   p.train = 0.7,
@@ -47,8 +48,9 @@ run_intersim_zentangler(
 \item{sis_rank}{Ranking criterion for SIS.}
 \item{screen_method}{Screening method passed to \code{fit_multiview_parallel_zentangler()}. Use \code{"none"} to skip hard SIS.}
 \item{a_stage_model}{A-stage model: \code{"lm"} for HIMA-like univariate linear models or \code{"maaslin2"} for MaAsLin2 fixed/random-effect screening.}
-\item{q_threshold}{q-value threshold used to define active mediators.}
+\item{q_threshold}{One or more q-value thresholds used to define active mediators. When multiple thresholds are supplied, Zentangler fits the model once and evaluates truth recovery at each threshold.}
 \item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
+\item{fdr_scope}{Final FDR scope used in simulation evaluation. Use \code{"global"} to adjust across all mediators from all views, \code{"within_view"} to adjust separately inside each omics view, or \code{"both"} to report both from the same fitted model.}
 \item{top_n}{Number of top-ranked mediators used for top-k truth recovery.}
 \item{seed}{Random seed.}
 \item{p.train}{Training split proportion passed to \code{gen_simmba()}.}
@@ -88,7 +90,8 @@ res <- run_intersim_zentangler(
   sis_n = 100,
   screen_method = "sis",
   glmnet_alpha = 0.75,
-  q_threshold = 0.25
+  q_threshold = seq(0.05, 0.25, by = 0.05),
+  fdr_scope = "both"
 )
 res$summary
 }

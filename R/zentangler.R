@@ -36,6 +36,39 @@ validate_fdr_method <- function(fdr_method) {
   match.arg(fdr_method, choices = c("BH", "BY"))
 }
 
+validate_fdr_scope <- function(fdr_scope) {
+  match.arg(fdr_scope, choices = c("global", "within_view"))
+}
+
+apply_primary_fdr_scope <- function(tab, fdr_method = c("BH", "BY"), fdr_scope = c("global", "within_view")) {
+  fdr_method <- validate_fdr_method(fdr_method)
+  fdr_scope <- validate_fdr_scope(fdr_scope)
+
+  if (is.null(tab) || nrow(tab) == 0) return(tab)
+  if (!("p_primary" %in% colnames(tab))) stop("tab must contain p_primary.")
+
+  tab$q_primary_global <- p.adjust(tab$p_primary, method = fdr_method)
+  tab$q_primary_within_view <- NA_real_
+
+  if ("omics" %in% colnames(tab)) {
+    idx_by_view <- split(seq_len(nrow(tab)), as.character(tab$omics))
+  } else {
+    idx_by_view <- list(all = seq_len(nrow(tab)))
+  }
+
+  for (idx in idx_by_view) {
+    tab$q_primary_within_view[idx] <- p.adjust(tab$p_primary[idx], method = fdr_method)
+  }
+
+  tab$q_primary <- if (identical(fdr_scope, "global")) {
+    tab$q_primary_global
+  } else {
+    tab$q_primary_within_view
+  }
+
+  tab
+}
+
 as_numeric_matrix <- function(df, block_name = "block") {
   if (is.matrix(df)) {
     if (!is.numeric(df)) stop(block_name, " must be numeric.")
@@ -447,7 +480,15 @@ zentangler_all_mediators <- function(fit) {
   tab
 }
 
+zentangler_clean_q_thresholds <- function(q_threshold) {
+  q_threshold <- sort(unique(as.numeric(q_threshold)))
+  q_threshold <- q_threshold[is.finite(q_threshold)]
+  if (length(q_threshold) == 0) stop("q_threshold must contain at least one finite numeric cutoff.")
+  q_threshold
+}
+
 zentangler_active_mediators <- function(fit, q_threshold = 0.25, q_col = "q_primary") {
+  q_threshold <- max(zentangler_clean_q_thresholds(q_threshold))
   tab <- zentangler_all_mediators(fit)
   if (nrow(tab) == 0) return(tab)
   if (!(q_col %in% colnames(tab))) stop("q_col not found in mediator table: ", q_col)
@@ -476,6 +517,7 @@ zentangler_top_mediators <- function(
 }
 
 zentangler_compute_view_summary <- function(tab, q_threshold = 0.25, q_col = "q_primary") {
+  q_threshold <- max(zentangler_clean_q_thresholds(q_threshold))
   if (is.null(tab) || nrow(tab) == 0) return(data.frame())
   if (!("omics" %in% colnames(tab))) stop("Mediator table must contain an 'omics' column.")
   if (!(q_col %in% colnames(tab))) stop("q_col not found in mediator table: ", q_col)
@@ -507,6 +549,7 @@ zentangler_view_summary <- function(fit, q_threshold = 0.25, q_col = "q_primary"
 }
 
 zentangler_compute_model_summary <- function(settings, diagnostics, tab, q_threshold = 0.25) {
+  q_threshold <- max(zentangler_clean_q_thresholds(q_threshold))
   active <- if (!is.null(tab) && nrow(tab) > 0) {
     is.finite(tab$q_primary) & tab$q_primary <= q_threshold & is.finite(tab$b) & tab$b != 0
   } else {
@@ -525,6 +568,7 @@ zentangler_compute_model_summary <- function(settings, diagnostics, tab, q_thres
     lambda_choice = settings$lambda_choice %||% NA_character_,
     glmnet_alpha = settings$glmnet_alpha %||% NA_real_,
     fdr_method = settings$fdr_method %||% NA_character_,
+    fdr_scope = settings$fdr_scope %||% NA_character_,
     b_inference = settings$b_inference %||% NA_character_,
     runtime_seconds = diagnostics$runtime_seconds %||% NA_real_,
     stringsAsFactors = FALSE
@@ -540,10 +584,47 @@ zentangler_model_summary <- function(fit, q_threshold = 0.25) {
   )
 }
 
+zentangler_threshold_summary <- function(
+  fit,
+  q_threshold = seq(0.05, 0.25, by = 0.05),
+  q_cols = NULL
+) {
+  tab <- zentangler_all_mediators(fit)
+  if (nrow(tab) == 0) return(data.frame())
+  q_threshold <- zentangler_clean_q_thresholds(q_threshold)
+  if (is.null(q_cols)) {
+    q_cols <- intersect(c("q_primary", "q_primary_global", "q_primary_within_view"), colnames(tab))
+  }
+  q_cols <- intersect(q_cols, colnames(tab))
+  if (length(q_cols) == 0) stop("No valid q-value columns found in mediator table.")
+
+  rows <- list()
+  ii <- 0L
+  for (q_col in q_cols) {
+    for (threshold in q_threshold) {
+      active <- is.finite(tab[[q_col]]) & tab[[q_col]] <= threshold & is.finite(tab$b) & tab$b != 0
+      ii <- ii + 1L
+      rows[[ii]] <- data.frame(
+        q_col = q_col,
+        q_threshold = threshold,
+        n_active = sum(active, na.rm = TRUE),
+        n_positive_score = sum(active & is.finite(tab$score) & tab$score > 0, na.rm = TRUE),
+        n_negative_score = sum(active & is.finite(tab$score) & tab$score < 0, na.rm = TRUE),
+        min_q = if (any(is.finite(tab[[q_col]]))) min(tab[[q_col]], na.rm = TRUE) else NA_real_,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  out <- do.call(rbind, rows)
+  rownames(out) <- NULL
+  out
+}
+
 summarize_zentangler <- function(fit, q_threshold = 0.25) {
   list(
     model_summary = zentangler_model_summary(fit, q_threshold = q_threshold),
     view_summary = zentangler_view_summary(fit, q_threshold = q_threshold),
+    threshold_summary = zentangler_threshold_summary(fit, q_threshold = q_threshold),
     top_mediators = zentangler_top_mediators(fit, n = 20L),
     active_mediators = zentangler_active_mediators(fit, q_threshold = q_threshold)
   )
@@ -1492,7 +1573,8 @@ assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec, fdr_method = c("
   out$joint_p_ab <- NA_real_
   out$joint_p_ab[both_legs] <- pmax(out$p_a[both_legs], out$p_b[both_legs])
   out$p_primary <- out$joint_p_ab
-  out$q_primary <- p.adjust(out$p_primary, method = fdr_method)
+  out$q_primary_within_view <- p.adjust(out$p_primary, method = fdr_method)
+  out$q_primary <- out$q_primary_within_view
 
   out <- out[order(out$abs_score, decreasing = TRUE), ]
   rownames(out) <- NULL
@@ -1657,6 +1739,7 @@ bootstrap_multiview_fit <- function(
   lambda_choice,
   glmnet_alpha,
   fdr_method,
+  fdr_scope,
   b_inference,
   debias_max_targets,
   coop_rho,
@@ -1723,6 +1806,7 @@ bootstrap_multiview_fit <- function(
         lambda_choice = lambda_choice,
         glmnet_alpha = glmnet_alpha,
         fdr_method = fdr_method,
+        fdr_scope = fdr_scope,
         b_inference = b_inference,
         debias_max_targets = debias_max_targets,
         coop_rho = coop_rho,
@@ -1791,6 +1875,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   fdr_method = c("BH", "BY"),
+  fdr_scope = c("global", "within_view"),
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -1814,6 +1899,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   lambda_choice <- match.arg(lambda_choice)
   glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
   fdr_method <- validate_fdr_method(fdr_method)
+  fdr_scope <- validate_fdr_scope(fdr_scope)
   b_inference <- match.arg(b_inference)
   set.seed(seed)
 
@@ -1933,7 +2019,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     })
   )
   combined$p_primary <- combined$joint_p_ab
-  combined$q_primary <- p.adjust(combined$p_primary, method = fdr_method)
+  combined <- apply_primary_fdr_scope(combined, fdr_method = fdr_method, fdr_scope = fdr_scope)
   combined <- combined[order(combined$abs_score, decreasing = TRUE), , drop = FALSE]
   rownames(combined) <- NULL
 
@@ -1972,6 +2058,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
       lambda_choice = lambda_choice,
       glmnet_alpha = glmnet_alpha,
       fdr_method = fdr_method,
+      fdr_scope = fdr_scope,
       b_inference = b_inference,
       debias_max_targets = debias_max_targets,
       coop_rho = coop_rho,
@@ -2055,6 +2142,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     lambda_choice = lambda_choice,
     glmnet_alpha = glmnet_alpha,
     fdr_method = fdr_method,
+    fdr_scope = fdr_scope,
     glmnet_penalty = glmnet_alpha_label(if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha),
     glmnet_alpha_used_in_y_stage = if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha,
     b_inference = b_inference,
@@ -2122,6 +2210,7 @@ fit_multiview_parallel_zentangler <- function(
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   fdr_method = c("BH", "BY"),
+  fdr_scope = c("global", "within_view"),
   b_inference = c("debiased_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
@@ -2146,7 +2235,7 @@ fit_multiview_parallel_zentangler <- function(
   screen_method <- match.arg(screen_method)
   method_preset <- match.arg(method_preset)
   fdr_method <- validate_fdr_method(fdr_method)
-
+  fdr_scope <- validate_fdr_scope(fdr_scope)
   inputs <- zentangler_mae_to_blocks(
     mae = mae,
     view_names = view_names,
@@ -2178,6 +2267,7 @@ fit_multiview_parallel_zentangler <- function(
     lambda_choice = lambda_choice,
     glmnet_alpha = glmnet_alpha,
     fdr_method = fdr_method,
+    fdr_scope = fdr_scope,
     b_inference = b_inference,
     debias_max_targets = debias_max_targets,
     coop_rho = coop_rho,

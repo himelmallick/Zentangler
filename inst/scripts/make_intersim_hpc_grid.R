@@ -79,11 +79,11 @@ if (identical(profile, "focused")) {
   b_inference_values <- c("debiased_lasso")
 } else if (identical(profile, "hpc5000")) {
   # Count logic with current default settings:
-  # base model rows = 1000 after adding BH/BY FDR choices and five q cutoffs
+  # base model rows = 200. Five q cutoffs are evaluated inside each fitted run.
   # screening rows = 9: SIS 100/200/250/500 x abs_a/pvalue + none
   # outcome rows = 1: continuous LM only
   # signal rows = 4: snr 1/2 x pathways 10/30, TIE fixed at 1
-  # total = 1000 * 9 * 1 * 4 = 36000 jobs
+  # total = 200 * 9 * 1 * 4 = 7200 jobs
   nsample_values <- c(500L, 1000L, 1500L, 2000L, 3000L)
   nrep_per_job <- 10L
   a_stage_models <- c("lm", "maaslin2")
@@ -161,7 +161,6 @@ early_late_grid <- expand.grid(
   lambda_choice = lambda_choices,
   glmnet_alpha = glmnet_alpha_values,
   fdr_method = fdr_methods,
-  q_threshold = q_thresholds,
   b_inference = b_inference_values,
   stringsAsFactors = FALSE
 )
@@ -175,7 +174,6 @@ intermediate_grid <- expand.grid(
   lambda_choice = lambda_choices,
   glmnet_alpha = 1,
   fdr_method = fdr_methods,
-  q_threshold = q_thresholds,
   b_inference = b_inference_values,
   stringsAsFactors = FALSE
 )
@@ -198,6 +196,8 @@ grid$maaslin2_standardize <- FALSE
 grid$grid_profile <- profile
 grid$nrep <- nrep_per_job
 grid$top_n <- 50L
+grid$q_thresholds <- paste(format(q_thresholds, trim = TRUE, scientific = FALSE), collapse = ",")
+grid$fdr_scope <- "both"
 grid$p_train <- 0.70
 grid$debias_max_targets <- 200L
 grid$coop_rho <- 0.20
@@ -218,7 +218,6 @@ grid <- grid[order(
   grid$glmnet_alpha,
   grid$b_inference,
   grid$fdr_method,
-  grid$q_threshold,
   grid$snr,
   grid$n_pathways,
   grid$TIE
@@ -230,7 +229,7 @@ grid <- grid[, c(
   "job_id", "seed", "grid_profile", "nrep", "nsample", "p_train",
   "method_preset", "a_stage_model", "fusion_mode",
   "screen_method", "sis_n", "sis_rank",
-  "lambda_choice", "glmnet_alpha", "fdr_method", "q_threshold", "top_n",
+  "lambda_choice", "glmnet_alpha", "fdr_method", "q_thresholds", "fdr_scope", "top_n",
   "outcome_type", "ygen_mode", "b_inference", "debias_max_targets",
   "coop_rho", "bootstrap_repeats", "residualize",
   "maaslin2_random_effect", "maaslin2_normalization", "maaslin2_transform",
@@ -248,7 +247,8 @@ cat("Screening:", paste(unique(grid$screen_method), collapse = ", "), "\n")
 cat("SIS ranks:", paste(unique(grid$sis_rank), collapse = ", "), "\n")
 cat("glmnet alpha values:", paste(sort(unique(grid$glmnet_alpha)), collapse = ", "), "\n")
 cat("FDR methods:", paste(unique(grid$fdr_method), collapse = ", "), "\n")
-cat("q thresholds:", paste(sort(unique(grid$q_threshold)), collapse = ", "), "\n")
+cat("q thresholds per fit:", paste(unique(grid$q_thresholds), collapse = "; "), "\n")
+cat("FDR scopes per fit:", paste(unique(grid$fdr_scope), collapse = ", "), "\n")
 cat("Outcome types:", paste(unique(grid$outcome_type), collapse = ", "), "\n")
 cat("Y generation modes:", paste(unique(grid$ygen_mode), collapse = ", "), "\n")
 cat("Signal-to-noise values:", paste(sort(unique(grid$snr)), collapse = ", "), "\n")

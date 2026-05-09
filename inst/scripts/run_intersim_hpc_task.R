@@ -58,6 +58,15 @@ as_num_or_null <- function(x) {
   as.numeric(x)
 }
 
+as_num_vec <- function(x, default = 0.25) {
+  if (length(x) == 0 || is.na(x) || !nzchar(as.character(x))) return(default)
+  vals <- unlist(strsplit(as.character(x), "[,;|[:space:]]+"))
+  vals <- vals[nzchar(vals)]
+  out <- suppressWarnings(as.numeric(vals))
+  out <- out[is.finite(out)]
+  if (length(out) == 0) default else out
+}
+
 row_value <- function(row, name, default = NULL) {
   if (!(name %in% colnames(row))) return(default)
   val <- row[[name]][1]
@@ -130,6 +139,8 @@ sis_n <- if (identical(screen_method, "none")) NULL else as_int_or_null(row_valu
 glmnet_alpha <- as_num_or_null(row_value(row, "glmnet_alpha", 1))
 if (is.null(glmnet_alpha)) glmnet_alpha <- 1
 fdr_method <- as.character(row_value(row, "fdr_method", "BH"))
+q_thresholds <- as_num_vec(row_value(row, "q_thresholds", row_value(row, "q_threshold", 0.25)), default = 0.25)
+fdr_scope <- as.character(row_value(row, "fdr_scope", "both"))
 
 maaslin2_random_effect <- as_chr_or_null(row_value(row, "maaslin2_random_effect", NULL))
 maaslin2_normalization <- as.character(row_value(row, "maaslin2_normalization", "NONE"))
@@ -141,7 +152,7 @@ TIE <- as_num_or_null(row_value(row, "TIE", 1))
 if (is.null(TIE)) TIE <- 1
 
 tag <- sprintf(
-  "job%04d_%s_%s_%s_%s_%s_%s_%s_n%s_sis%s_lam%s_a%s_q%s_snr%s_path%s_tie%s",
+  "job%04d_%s_%s_%s_%s_%s_%s_%s_n%s_sis%s_lam%s_a%s_q%s_scope%s_snr%s_path%s_tie%s",
   as.integer(row_value(row, "job_id", task_id)),
   safe_tag(method_preset),
   safe_tag(a_stage_model),
@@ -154,7 +165,8 @@ tag <- sprintf(
   safe_tag(row_value(row, "sis_n", NA)),
   safe_tag(row_value(row, "lambda_choice", "lambda.1se")),
   gsub("\\.", "p", as.character(glmnet_alpha)),
-  paste0(safe_tag(fdr_method), gsub("\\.", "p", as.character(row_value(row, "q_threshold", 0.25)))),
+  paste0(safe_tag(fdr_method), "grid", gsub("\\.", "p", as.character(min(q_thresholds))), "to", gsub("\\.", "p", as.character(max(q_thresholds)))),
+  safe_tag(fdr_scope),
   safe_tag(row_value(row, "snr", NA)),
   safe_tag(row_value(row, "n_pathways", NA)),
   gsub("\\.", "p", as.character(row_value(row, "TIE", 1)))
@@ -200,8 +212,9 @@ res <- try(
     maaslin2_analysis_method = maaslin2_analysis_method,
     maaslin2_standardize = maaslin2_standardize,
     maaslin2_output_dir = maaslin2_output_dir,
-    q_threshold = as.numeric(row_value(row, "q_threshold", 0.25)),
+    q_threshold = q_thresholds,
     fdr_method = fdr_method,
+    fdr_scope = fdr_scope,
     top_n = as.integer(row_value(row, "top_n", 50L)),
     seed = as.integer(row_value(row, "seed", 1L)),
     p.train = as.numeric(row_value(row, "p_train", 0.70)),

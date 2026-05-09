@@ -29,7 +29,7 @@ summarize_zentangler(fit, q_threshold = 0.25)
 }
 \arguments{
 \item{fit}{A fitted object returned by \code{fit_multiview_parallel_zentangler()}.}
-\item{q_threshold}{BH q-value threshold used to define active mediators.}
+\item{q_threshold}{One or more q-value thresholds used to define active mediators. If more than one threshold is supplied to \code{summarize_zentangler()}, the returned \code{threshold_summary} reports active mediator counts for each threshold without refitting. The \code{active_mediators} table uses the largest supplied threshold.}
 \item{q_col}{Name of the q-value column used for active mediator calls.}
 \item{n}{Number of mediators to return.}
 \item{order_by}{Column used to order mediators.}
@@ -39,7 +39,7 @@ summarize_zentangler(fit, q_threshold = 0.25)
 Convenience helpers for inspecting Zentangler method presets and fitted model outputs.
 }
 \value{
-\code{zentangler_method_presets()} returns a data frame describing named presets. Mediator helpers return data frames. \code{summarize_zentangler()} returns a list containing model summary, view summary, top mediators, and active mediators.
+\code{zentangler_method_presets()} returns a data frame describing named presets. Mediator helpers return data frames. \code{summarize_zentangler()} returns a list containing model summary, view summary, threshold summary, top mediators, and active mediators.
 }
 \examples{
 \dontrun{
@@ -49,5 +49,6 @@ zentangler_model_summary(fit)
 zentangler_view_summary(fit)
 zentangler_top_mediators(fit, n = 10)
 zentangler_active_mediators(fit, q_threshold = 0.25)
+summarize_zentangler(fit, q_threshold = seq(0.05, 0.25, by = 0.05))$threshold_summary
 }
 }

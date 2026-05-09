@@ -11,10 +11,16 @@
 #' @param sis_rank Ranking criterion for SIS.
 #' @param screen_method Screening method passed to \code{fit_multiview_parallel_zentangler()}.
 #' @param a_stage_model A-stage model: \code{"lm"} for HIMA-like univariate linear models or \code{"maaslin2"} for MaAsLin2 fixed/random-effect screening.
-#' @param q_threshold q-value threshold used to define active mediators.
+#' @param q_threshold One or more q-value thresholds used to define active
+#'   mediators. Passing several thresholds reuses the same fitted model and
+#'   returns one performance row per threshold.
 #' @param fdr_method Multiple-testing correction used to compute q-values.
 #'   Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for
 #'   Benjamini-Yekutieli.
+#' @param fdr_scope Which final q-value family to evaluate. Use
+#'   \code{"global"} for q-values across all views, \code{"within_view"} for
+#'   q-values computed separately inside each view, or \code{"both"} to report
+#'   both from the same model fit.
 #' @param top_n Number of top-ranked mediators used for top-k truth recovery.
 #' @param seed Random seed passed to \code{gen_simmba()} and model fits.
 #' @param p.train Training split proportion passed to \code{gen_simmba()}.
@@ -51,6 +57,7 @@ run_intersim_zentangler <- function(
   a_stage_model = c("lm", "maaslin2"),
   q_threshold = 0.25,
   fdr_method = c("BH", "BY"),
+  fdr_scope = c("global", "within_view", "both"),
   top_n = 50L,
   seed = 1234,
   p.train = 0.7,
@@ -86,6 +93,11 @@ run_intersim_zentangler <- function(
   lambda_choice <- match.arg(lambda_choice)
   glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
   fdr_method <- validate_fdr_method(fdr_method)
+  fdr_scope <- match.arg(fdr_scope)
+  q_threshold <- sort(unique(as.numeric(q_threshold)))
+  q_threshold <- q_threshold[is.finite(q_threshold)]
+  if (length(q_threshold) == 0) stop("q_threshold must contain at least one finite numeric cutoff.")
+  eval_scopes <- if (identical(fdr_scope, "both")) c("global", "within_view") else fdr_scope
   b_inference <- match.arg(b_inference)
 
   if (identical(outcome.type, "binary")) {
@@ -128,7 +140,8 @@ run_intersim_zentangler <- function(
                 ", a_stage_model = ", a_stage_model,
                 ", glmnet_alpha = ", glmnet_alpha,
                 ", fdr_method = ", fdr_method,
-                ", q_threshold = ", q_threshold)
+                ", fdr_scope = ", fdr_scope,
+                ", q_threshold = ", paste(q_threshold, collapse = ","))
       }
 
       fit_i <- try(
@@ -155,6 +168,7 @@ run_intersim_zentangler <- function(
           lambda_choice = lambda_choice,
           glmnet_alpha = glmnet_alpha,
           fdr_method = fdr_method,
+          fdr_scope = if (identical(fdr_scope, "within_view")) "within_view" else "global",
           b_inference = b_inference,
           debias_max_targets = debias_max_targets,
           coop_rho = coop_rho,
@@ -173,14 +187,22 @@ run_intersim_zentangler <- function(
       }
 
       fit_list[[key]] <- fit_i
-      detail_rows[[length(detail_rows) + 1L]] <- zentangler_score_truth_recovery(
-        tab = fit_i$combined_mediators,
-        truth_key = truth_key,
-        rep = rep_i,
-        fusion_mode = fusion_mode,
-        q_threshold = q_threshold,
-        top_n = top_n
-      )
+      for (scope_i in eval_scopes) {
+        q_col_i <- if (identical(scope_i, "within_view")) "q_primary_within_view" else "q_primary_global"
+        if (!(q_col_i %in% colnames(fit_i$combined_mediators))) q_col_i <- "q_primary"
+        for (threshold_i in q_threshold) {
+          detail_rows[[length(detail_rows) + 1L]] <- zentangler_score_truth_recovery(
+            tab = fit_i$combined_mediators,
+            truth_key = truth_key,
+            rep = rep_i,
+            fusion_mode = fusion_mode,
+            q_threshold = threshold_i,
+            q_col = q_col_i,
+            fdr_scope = scope_i,
+            top_n = top_n
+          )
+        }
+      }
     }
   }
 
@@ -212,6 +234,7 @@ run_intersim_zentangler <- function(
       a_stage_model = a_stage_model,
       q_threshold = q_threshold,
       fdr_method = fdr_method,
+      fdr_scope = fdr_scope,
       top_n = top_n,
       seed = seed,
       p.train = p.train,
@@ -271,11 +294,16 @@ zentangler_score_truth_recovery <- function(tab,
                                             rep,
                                             fusion_mode,
                                             q_threshold,
+                                            q_col = "q_primary",
+                                            fdr_scope = "global",
                                             top_n) {
   if (is.null(tab) || nrow(tab) == 0) {
     return(data.frame(
       rep = rep,
       fusion_mode = fusion_mode,
+      fdr_scope = fdr_scope,
+      q_col = q_col,
+      q_threshold = q_threshold,
       n_active = 0,
       true_active = 0,
       false_active = 0,
@@ -290,12 +318,13 @@ zentangler_score_truth_recovery <- function(tab,
   }
 
   tab <- as.data.frame(tab, stringsAsFactors = FALSE)
+  if (!(q_col %in% colnames(tab))) stop("q_col not found in mediator table: ", q_col)
   key <- paste(as.character(tab$omics), as.character(tab$mediator), sep = "::")
   truth_map <- stats::setNames(truth_key$is_true, truth_key$key)
   is_true <- as.logical(truth_map[key])
   is_true[is.na(is_true)] <- FALSE
 
-  active <- is.finite(tab$q_primary) & tab$q_primary <= q_threshold &
+  active <- is.finite(tab[[q_col]]) & tab[[q_col]] <= q_threshold &
     is.finite(tab$b) & tab$b != 0
 
   n_active <- sum(active, na.rm = TRUE)
@@ -311,6 +340,9 @@ zentangler_score_truth_recovery <- function(tab,
   data.frame(
     rep = rep,
     fusion_mode = fusion_mode,
+    fdr_scope = fdr_scope,
+    q_col = q_col,
+    q_threshold = q_threshold,
     n_active = n_active,
     true_active = true_active,
     false_active = false_active,
@@ -327,11 +359,17 @@ zentangler_score_truth_recovery <- function(tab,
 zentangler_summarize_truth_recovery <- function(detail) {
   if (is.null(detail) || nrow(detail) == 0) return(data.frame())
 
-  fusion_levels <- unique(as.character(detail$fusion_mode))
-  out <- lapply(fusion_levels, function(fm) {
-    d <- detail[as.character(detail$fusion_mode) == fm, , drop = FALSE]
+  group_cols <- intersect(c("fusion_mode", "fdr_scope", "q_col", "q_threshold"), colnames(detail))
+  if (length(group_cols) == 0) group_cols <- "fusion_mode"
+  group_key <- interaction(detail[, group_cols, drop = FALSE], drop = TRUE, sep = "\r")
+  groups <- split(seq_len(nrow(detail)), group_key)
+
+  out <- lapply(groups, function(idx) {
+    d <- detail[idx, , drop = FALSE]
+    group_vals <- d[1L, group_cols, drop = FALSE]
+    rownames(group_vals) <- NULL
     data.frame(
-      fusion_mode = fm,
+      group_vals,
       n_active = mean(d$n_active, na.rm = TRUE),
       true_active = mean(d$true_active, na.rm = TRUE),
       false_active = mean(d$false_active, na.rm = TRUE),
@@ -346,5 +384,9 @@ zentangler_summarize_truth_recovery <- function(detail) {
 
   out <- do.call(rbind, out)
   rownames(out) <- NULL
+  if ("q_threshold" %in% colnames(out)) {
+    out <- out[order(out$fusion_mode, out$fdr_scope, out$q_threshold), , drop = FALSE]
+    rownames(out) <- NULL
+  }
   out
 }
