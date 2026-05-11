@@ -320,6 +320,7 @@ res$summary
 
 With `fdr_scope = "both"`, the summary reports both global and within-view q-value evaluations. With a threshold vector, the summary reports one row per threshold rather than launching a separate fit per threshold.
 
+
 ## Output Object
 
 The fit object is a list containing:
@@ -338,7 +339,8 @@ The fit object is a list containing:
 - `settings$glmnet_alpha`: Y-stage `glmnet` mixing value used for early/late fusion
 - `settings$fdr_method`: multiple-testing correction used for q-values (`"BH"` or `"BY"`)
 - `settings$fdr_scope`: final q-value scope used by `q_primary` (`"global"` or `"within_view"`)
-- `effect_decomposition`: direct, indirect, and total-effect summaries
+- `causal_effects`: causal direct, indirect, and total effect summaries for the selected active mediator set
+- `effect_decomposition`: alias for `causal_effects`
 - `bootstrap`: bootstrap matrices and uncertainty summaries when enabled
 - `fits`: fitted model objects when `return_fits = TRUE`
 

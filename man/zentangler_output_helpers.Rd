@@ -39,7 +39,7 @@ summarize_zentangler(fit, q_threshold = 0.25)
 Convenience helpers for inspecting Zentangler method presets and fitted model outputs.
 }
 \value{
-\code{zentangler_method_presets()} returns a data frame describing named presets. Mediator helpers return data frames. \code{summarize_zentangler()} returns a list containing model summary, view summary, threshold summary, top mediators, and active mediators.
+\code{zentangler_method_presets()} returns a data frame describing named presets. Mediator helpers return data frames. \code{summarize_zentangler()} returns a list containing model summary, view summary, threshold summary, top mediators, active mediators, and causal direct/indirect/total effect summaries.
 }
 \examples{
 \dontrun{

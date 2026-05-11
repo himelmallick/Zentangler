@@ -28,7 +28,8 @@ fit_multiview_parallel_zentangler(
   glmnet_alpha = 1,
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
-  b_inference = c("debiased_lasso", "refit"),
+  primary_inference = c("model_based", "bootstrap_score"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -39,6 +40,8 @@ fit_multiview_parallel_zentangler(
   bootstrap_ci_level = 0.95,
   bootstrap_seed = seed + 10000L,
   bootstrap_id = NULL,
+  effect_x0 = NULL,
+  effect_x1 = NULL,
   duplicate_primary = c("mean", "first"),
   fill_nonfinite_zero = FALSE
 )
@@ -68,7 +71,8 @@ fit_multiview_parallel_zentangler(
 \item{glmnet_alpha}{Glmnet mixing parameter for early and late fusion. Use \code{1} for lasso, values between \code{0} and \code{1} for elastic net, and \code{0} for ridge. Intermediate fusion currently uses the cooperative lasso-style update.}
 \item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
 \item{fdr_scope}{Final FDR scope. Use \code{"global"} to compute \code{q_primary} across all mediators from all views, or \code{"within_view"} to compute \code{q_primary} separately inside each view. Both \code{q_primary_global} and \code{q_primary_within_view} are retained in the output table.}
-\item{b_inference}{B-path inference method.}
+\item{primary_inference}{Primary mediator p-value engine. Use \code{"model_based"} to set \code{p_primary} from joint A/B evidence, or \code{"bootstrap_score"} to set \code{p_primary} from bootstrap p-values for the mediation score. Bootstrap-score inference requires \code{bootstrap_repeats > 0}.}
+\item{b_inference}{B-path inference method. \code{"debiased_lasso"} uses Gaussian de-biased lasso for Gaussian outcomes and de-biased logistic lasso for binomial outcomes. \code{"debiased_logistic_lasso"} explicitly requests the binomial de-biased logistic lasso path. \code{"refit"} uses active-set refitting.}
 \item{debias_max_targets}{Maximum number of active B-path targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}
 \item{coop_maxit}{Maximum cooperative fusion iterations.}
@@ -79,13 +83,17 @@ fit_multiview_parallel_zentangler(
 \item{bootstrap_ci_level}{Bootstrap confidence level.}
 \item{bootstrap_seed}{Bootstrap seed.}
 \item{bootstrap_id}{Optional cluster or subject ID column in \code{colData(mae)} for cluster bootstrap.}
+\item{effect_x0}{Optional reference exposure level for causal direct, indirect, and total effect summaries. If \code{NULL}, binary exposures use the lower observed level and continuous exposures use the 25th percentile.}
+\item{effect_x1}{Optional comparison exposure level for causal direct, indirect, and total effect summaries. If \code{NULL}, binary exposures use the higher observed level and continuous exposures use the 75th percentile.}
 \item{duplicate_primary}{How to handle duplicate primary sample IDs after MAE mapping.}
 \item{fill_nonfinite_zero}{Logical. If \code{TRUE}, replace non-finite assay values with zero before filtering.}
 }
 \value{
 A list with run settings, diagnostics, aligned sample IDs, per-view mediator tables, cleaner mediator aliases
 (\code{mediators_all}, \code{mediators_active}, \code{mediators_top}), view/model summaries,
-exploratory effect summaries, optional bootstrap summaries, and optional model fits.
+causal direct/indirect/total effect summaries for the selected active mediator set, optional bootstrap summaries,
+and optional model fits. Causal effect summaries are returned in both \code{causal_effects} and
+\code{effect_decomposition}.
 }
 \description{
 Fits the Zentangler parallel multi-view mediation workflow using a \code{MultiAssayExperiment} input.

@@ -72,12 +72,12 @@ A positive score means the A-path and B-path have the same sign. A negative scor
 means the A-path and B-path have opposite signs. Larger absolute scores are used
 as a ranking measure.
 
-Important scientific distinction: in the current package, `score = a*b` is a
-screening and ranking score. Zentangler also reports a direct-effect-like `X`
-coefficient from the fitted Y model and a summed indirect-score decomposition.
-However, these are not yet final formal natural direct effect and natural
-indirect effect estimators with full causal identification and post-selection
-inference guarantees.
+Important scientific distinction: `score = a*b` remains the mediator-level
+screening and ranking score. Zentangler separately reports causal direct,
+indirect, and total effect summaries using an active-set parametric
+g-computation layer. These causal summaries are conditional on the selected
+mediator set and on the usual mediation identification assumptions; they are not
+a replacement for sensitivity analysis or a final selective-inference proof.
 
 # Input data contract
 
@@ -572,14 +572,15 @@ The fit object includes an `effect_decomposition` table:
 fit$effect_decomposition
 ```
 
-This reports the direct-effect-like coefficient for `X` from the fitted Y model,
-the summed active mediator score, view-specific summed mediator scores, and a
-proportion-mediated-style summary when a reduced total X-to-Y association can be
-computed.
+This reports selected-active-set natural-direct-effect-style, natural-indirect-effect-style,
+and total-effect-style summaries. For binary exposures, the default contrast is
+the lower observed exposure level versus the higher observed exposure level. For
+continuous exposures, the default contrast is the 25th versus 75th percentile,
+unless `effect_x0` and `effect_x1` are supplied by the user.
 
-These summaries are useful for interpretation, but they should be presented as
-prototype decomposition summaries rather than finalized causal natural direct and
-indirect effects.
+For Gaussian outcomes, effects are reported on the mean-difference scale. For
+binary outcomes, effects are reported on the risk-difference scale by averaging
+predicted probabilities under the relevant counterfactual mediator values.
 
 # Running simulations
 
@@ -632,32 +633,3 @@ fdr               false_active / n_active
 top50_true        number of true mediators in the top 50 ranked mediators
 top50_precision   top50_true / 50
 ```
-
-# Recommended first analyses
-
-For a first real-data analysis, a practical sequence is:
-
-1. Start with `method_preset = "fast_lasso"`.
-2. Use `fusion_mode = "early"`.
-3. Use `screen_method = "sis"` with a moderate `sis_n`.
-4. Use `b_inference = "debiased_lasso"`.
-5. Inspect `model_summary`, `view_summary`, and top mediators.
-6. Repeat with `fusion_mode = "late"` and `fusion_mode = "intermediate"`.
-7. Run sensitivity analyses with `screen_method = "none"` when sample size allows.
-8. Add subject-level bootstrap when samples are repeated within subject.
-9. For longitudinal A-stage modeling, compare `a_stage_model = "lm"` and `a_stage_model = "maaslin2"`.
-10. Use simulations to evaluate FDR, precision, recall, and top-k recovery under known truth.
-
-# Current methodological status
-
-Zentangler is currently a method-development package. The implementation is
-useful for transparent model construction, multiview mediator ranking, simulation
-experiments, and early real-data exploration.
-
-The current inference layer includes HIMA-style de-biased lasso B-path inference,
-BH/BY correction, global and within-view final q-value options, and optional
-bootstrap uncertainty. The full screening plus fusion plus multiplicity process
-is not yet covered by a formal selective inference proof. For publication-grade
-causal claims, the next layer should formalize the causal estimand,
-identification assumptions, post-selection inference, and simulation-based
-operating characteristics.
