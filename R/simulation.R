@@ -2,12 +2,16 @@
 #'
 #' Generates simulated multi-omics datasets with specified parameters,
 #' including sample size, signal-to-noise ratio, DE probabilities,
-#' and response variable generation mode. It also splits the data into
-#' training and testing sets.
+#' and response variable generation mode. The returned analysis MAE uses all
+#' generated samples; no train/test split is applied because Zentangler
+#' simulation benchmarks evaluate mediator recovery rather than held-out
+#' prediction.
 #'
 #' @param nsample Sample size
 #' @param snr Signal to noise ratio (for continuous outcomes)
-#' @param p.train Train-test split ratio
+#' @param p.train Deprecated compatibility argument. It is retained so older
+#'   scripts still run, but the current mediation benchmark uses all samples
+#'   for analysis and sets this internally to 1.
 #' @param de.prob DE probability across all modalities (vector of length 3)
 #' @param de.downProb Down-regulation probability (vector of length 3)
 #' @param de.facLoc DE factor location (vector of length 3)
@@ -33,10 +37,10 @@
 #'   objects for debugging. The default FALSE keeps the simulation output
 #'   MAE-first for Bioconductor-style workflows.
 #'
-#' @return List containing training and testing datasets and simulation parameters:
+#' @return List containing analysis datasets and simulation parameters:
 #'   \itemize{
-#'     \item trainMae: list of length nrep, each a MultiAssayExperiment with training samples
-#'     \item testMae: list of length nrep, each a MultiAssayExperiment with test samples
+#'     \item trainMae: list of length nrep, each a MultiAssayExperiment with all simulated samples
+#'     \item testMae: list of length nrep, retained for compatibility and containing NULL entries
 #'     \item truthDat: per-feature simulation truth tables
 #'     \item snr, p.train, de.prob, de.downProb, de.facLoc, de.facScale, nrep, seed
 #'   }
@@ -45,7 +49,7 @@
 #' simulated_data <- gen_simmba(nsample = 100)
 gen_simmba <- function(nsample,                      # Sample size
                        snr = 1,                      # Signal to noise ratio (continuous)
-                       p.train = 0.7,                # Train-test split ratio
+                       p.train = 1,                  # Deprecated; all samples are used
                        de.prob = rep(0.1, 3),        # DE probability across modalities
                        de.downProb = rep(0.5, 3),    # Down-regulation probability
                        de.facLoc = rep(1, 3),        # DE factor location
@@ -69,6 +73,14 @@ gen_simmba <- function(nsample,                      # Sample size
 
   ygen.mode    <- match.arg(ygen.mode)
   outcome.type <- match.arg(outcome.type)
+  if (!isTRUE(all.equal(as.numeric(p.train), 1))) {
+    warning(
+      "p.train is deprecated and ignored in Zentangler mediation benchmarks; ",
+      "all simulated samples are used for analysis.",
+      call. = FALSE
+    )
+  }
+  p.train <- 1
   effect_type <- match.arg(effect_type,
                            choices = c("spiked", "null_a", "null_b", "null_ab"),
                            several.ok = TRUE)
@@ -81,7 +93,7 @@ gen_simmba <- function(nsample,                      # Sample size
   dirPathways_a <- rep(dirPathways_a, length.out = 3)
   dirPathways_b <- rep(dirPathways_b, length.out = 3)
 
-  # Initialize lists to store training and testing datasets.
+  # Initialize lists to store analysis datasets.
   # The MAE lists are the Bioconductor-facing simulation output.
   trainDat <- testDat <- vector("list", nrep)
   names(trainDat) <- names(testDat) <- paste("Rep", 1:nrep, sep = "_")
@@ -231,24 +243,22 @@ gen_simmba <- function(nsample,                      # Sample size
       pcl$sample_metadata$status <- delta
     }
 
-    #################################
-    # 6. Train / test split         #
-    #################################
+    ##########################################
+    # 6. Analysis data: use all samples      #
+    ##########################################
 
-    train <- test <- pcl
-    tr.row <- sample.int(nsample, size = round(nsample * p.train), replace = FALSE)
-
-    train$sample_metadata <- pcl$sample_metadata[tr.row, , drop = FALSE]
-    test$sample_metadata  <- pcl$sample_metadata[-tr.row, , drop = FALSE]
-
-    train$feature_table <- pcl$feature_table[, tr.row, drop = FALSE]
-    test$feature_table  <- pcl$feature_table[, -tr.row, drop = FALSE]
+    # Mediation benchmarking evaluates recovery of known true mediators, not
+    # held-out prediction. Therefore the analysis MAE contains all generated
+    # samples. The trainMae name is retained for backward compatibility with
+    # existing scripts, but it should be interpreted as the analysis dataset.
+    train <- pcl
+    test <- NULL
 
     # Store in lists
     trainDat[[k]] <- train
-    testDat[[k]]  <- test
+    testDat[k] <- list(test)
     trainMae[[k]] <- simmba_pcl_to_mae(train)
-    testMae[[k]]  <- simmba_pcl_to_mae(test)
+    testMae[k] <- list(NULL)
     truthDat[[k]] <- truth
   }
 

@@ -23,7 +23,8 @@
 #'   both from the same model fit.
 #' @param top_n Number of top-ranked mediators used for top-k truth recovery.
 #' @param seed Random seed passed to \code{gen_simmba()} and model fits.
-#' @param p.train Training split proportion passed to \code{gen_simmba()}.
+#' @param p.train Deprecated compatibility argument. The simulation generator
+#'   now uses all generated samples for mediation benchmarking.
 #' @param ygen.mode Outcome generation mode passed to \code{gen_simmba()}.
 #' @param outcome.type Outcome type passed to \code{gen_simmba()}.
 #' @param lambda_choice Cross-validated glmnet lambda choice.
@@ -41,6 +42,10 @@
 #' @param covariates Optional covariate names in \code{colData(mae)}.
 #' @param bootstrap_repeats Number of bootstrap repeats inside each fit.
 #' @param bootstrap_id Optional bootstrap cluster ID column.
+#' @param sim Optional pre-generated simulation object from \code{gen_simmba()}.
+#'   When supplied, Zentangler fits use this object instead of generating a new
+#'   simulation. This is useful for paired benchmarking against comparator
+#'   methods on exactly the same simulated datasets.
 #' @param verbose Logical. Print progress.
 #' @param ... Additional arguments passed to \code{gen_simmba()}.
 #'
@@ -60,7 +65,7 @@ run_intersim_zentangler <- function(
   fdr_scope = c("global", "within_view", "both"),
   top_n = 50L,
   seed = 1234,
-  p.train = 0.7,
+  p.train = 1,
   ygen.mode = c("LM", "Friedman", "Friedman2"),
   outcome.type = c("continuous", "binary"),
   lambda_choice = c("lambda.1se", "lambda.min"),
@@ -78,6 +83,7 @@ run_intersim_zentangler <- function(
   covariates = NULL,
   bootstrap_repeats = 0L,
   bootstrap_id = NULL,
+  sim = NULL,
   verbose = TRUE,
   ...
 ) {
@@ -106,15 +112,29 @@ run_intersim_zentangler <- function(
     y_family <- "gaussian"
   }
 
-  sim <- gen_simmba(
-    nsample = nsample,
-    nrep = nrep,
-    seed = seed,
-    p.train = p.train,
-    ygen.mode = ygen.mode,
-    outcome.type = outcome.type,
-    ...
-  )
+  if (is.null(sim)) {
+    sim <- gen_simmba(
+      nsample = nsample,
+      nrep = nrep,
+      seed = seed,
+      p.train = p.train,
+      ygen.mode = ygen.mode,
+      outcome.type = outcome.type,
+      ...
+    )
+  } else {
+    if (!is.list(sim) || is.null(sim$trainMae) || is.null(sim$truthDat)) {
+      stop("sim must be a gen_simmba()-like list containing trainMae and truthDat.")
+    }
+    if (length(sim$trainMae) < nrep || length(sim$truthDat) < nrep) {
+      stop(
+        "sim contains fewer replicates than requested nrep. ",
+        "Requested nrep = ", nrep,
+        ", length(sim$trainMae) = ", length(sim$trainMae),
+        ", length(sim$truthDat) = ", length(sim$truthDat), "."
+      )
+    }
+  }
 
   detail_rows <- list()
   fit_list <- list()
