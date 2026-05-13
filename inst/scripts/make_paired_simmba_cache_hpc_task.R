@@ -73,12 +73,13 @@ if (!is.finite(task_id) || task_id < 1L || task_id > nrow(grid)) {
 row <- grid[task_id, , drop = FALSE]
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-job_id <- as.integer(row_value(row, "job_id", task_id))
-out_rds <- file.path(out_dir, sprintf("job%04d_sim.rds", job_id))
-out_meta <- file.path(out_dir, sprintf("job%04d_sim_metadata.csv", job_id))
-out_grid_row <- file.path(out_dir, sprintf("job%04d_grid_row.csv", job_id))
-out_session <- file.path(out_dir, sprintf("job%04d_sessionInfo.txt", job_id))
-out_log <- file.path(out_dir, sprintf("job%04d_sim_log.txt", job_id))
+sim_id <- as.integer(row_value(row, "sim_id", row_value(row, "job_id", task_id)))
+job_id <- as.integer(row_value(row, "job_id", sim_id))
+out_rds <- file.path(out_dir, sprintf("sim%04d_sim.rds", sim_id))
+out_meta <- file.path(out_dir, sprintf("sim%04d_sim_metadata.csv", sim_id))
+out_grid_row <- file.path(out_dir, sprintf("sim%04d_grid_row.csv", sim_id))
+out_session <- file.path(out_dir, sprintf("sim%04d_sessionInfo.txt", sim_id))
+out_log <- file.path(out_dir, sprintf("sim%04d_sim_log.txt", sim_id))
 
 log_msg <- function(...) {
   line <- paste0("[", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "] ", paste(..., sep = ""))
@@ -95,6 +96,7 @@ log_msg("Generating paired SIMMBA cache")
 log_msg("Array task ID: ", array_task_id)
 log_msg("Task offset: ", task_offset)
 log_msg("Effective grid row: ", task_id, " of ", nrow(grid))
+log_msg("Simulation ID: ", sim_id)
 log_msg("Job ID: ", job_id)
 log_msg("Grid file: ", normalizePath(grid_file, mustWork = FALSE))
 log_msg("Output RDS: ", normalizePath(out_rds, mustWork = FALSE))
@@ -110,7 +112,7 @@ if (is.null(TIE)) TIE <- 1
 sim_args <- list(
   nsample = as.integer(row_value(row, "nsample", 600L)),
   nrep = as.integer(row_value(row, "nrep", 10L)),
-  seed = as.integer(row_value(row, "seed", 1L)),
+  seed = as.integer(row_value(row, "sim_seed", row_value(row, "seed", 1L))),
   p.train = 1,
   ygen.mode = as.character(row_value(row, "ygen_mode", "LM")),
   outcome.type = as.character(row_value(row, "outcome_type", "continuous")),
@@ -124,11 +126,13 @@ sim <- do.call(gen_simmba, sim_args)
 attr(sim, "zentangler_grid_row") <- row
 attr(sim, "zentangler_sim_args") <- sim_args
 attr(sim, "zentangler_job_id") <- job_id
+attr(sim, "zentangler_sim_id") <- sim_id
 attr(sim, "zentangler_task_id") <- task_id
 
 saveRDS(sim, out_rds)
 meta <- data.frame(
   job_id = job_id,
+  sim_id = sim_id,
   task_id = task_id,
   array_task_id = array_task_id,
   task_offset = task_offset,

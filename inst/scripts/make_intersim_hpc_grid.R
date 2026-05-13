@@ -38,6 +38,9 @@ parse_args <- function(args) {
 
 args <- parse_args(commandArgs(trailingOnly = TRUE))
 out_file <- if (!is.null(args$out)) args$out else "intersim_zentangler_grid.csv"
+sim_out_file <- if (!is.null(args$`sim-out`)) args$`sim-out` else if (!is.null(args$sim_out)) args$sim_out else {
+  sub("[.]csv$", "_sim_grid.csv", out_file)
+}
 profile <- if (!is.null(args$profile)) as.character(args$profile) else "hpc5000"
 profile <- match.arg(profile, choices = c("focused", "hpc5000", "expanded", "full"))
 if (identical(profile, "expanded")) profile <- "hpc5000"
@@ -206,7 +209,9 @@ grid$coop_rho <- 0.20
 grid$bootstrap_repeats <- 0L
 grid$residualize <- FALSE
 
-# Give every row a reproducible seed and stable ID.
+# Give every row a stable job ID. Simulation IDs are assigned from only the
+# data-generating parameters so different analysis methods/fusion settings can
+# be benchmarked on exactly the same cached simulated datasets.
 grid <- grid[order(
   grid$nsample,
   grid$outcome_type,
@@ -225,10 +230,23 @@ grid <- grid[order(
   grid$TIE
 ), , drop = FALSE]
 grid$job_id <- seq_len(nrow(grid))
-grid$seed <- 100000L + grid$job_id * 100L
+
+sim_key_cols <- c(
+  "grid_profile", "nrep", "nsample", "p_train",
+  "outcome_type", "ygen_mode", "snr", "n_pathways", "TIE"
+)
+sim_key <- apply(grid[, sim_key_cols, drop = FALSE], 1L, function(x) paste(x, collapse = "||"))
+sim_levels <- unique(sim_key)
+grid$sim_id <- match(sim_key, sim_levels)
+grid$sim_seed <- 100000L + grid$sim_id * 100L
+grid$sim_key <- sim_key
+
+# Keep `seed` for backward compatibility with existing task scripts. It is now
+# the simulation seed shared by all method rows with the same sim_id.
+grid$seed <- grid$sim_seed
 
 grid <- grid[, c(
-  "job_id", "seed", "grid_profile", "nrep", "nsample", "p_train",
+  "job_id", "sim_id", "seed", "sim_seed", "sim_key", "grid_profile", "nrep", "nsample", "p_train",
   "method_preset", "a_stage_model", "fusion_mode",
   "screen_method", "sis_n", "sis_rank",
   "lambda_choice", "glmnet_alpha", "fdr_method", "q_thresholds", "fdr_scope", "top_n",
@@ -239,10 +257,19 @@ grid <- grid[, c(
   "snr", "n_pathways", "TIE"
 )]
 
+sim_grid <- grid[!duplicated(grid$sim_id), c(
+  "sim_id", "sim_seed", "sim_key", "grid_profile", "nrep", "nsample", "p_train",
+  "outcome_type", "ygen_mode", "snr", "n_pathways", "TIE"
+)]
+sim_grid <- sim_grid[order(sim_grid$sim_id), , drop = FALSE]
+
 utils::write.csv(grid, out_file, row.names = FALSE, na = "")
+utils::write.csv(sim_grid, sim_out_file, row.names = FALSE, na = "")
 cat("Wrote grid:", normalizePath(out_file, mustWork = FALSE), "\n")
+cat("Wrote simulation grid:", normalizePath(sim_out_file, mustWork = FALSE), "\n")
 cat("Profile:", profile, "\n")
 cat("Number of jobs:", nrow(grid), "\n")
+cat("Number of unique simulation caches:", nrow(sim_grid), "\n")
 cat("A-stage models:", paste(unique(grid$a_stage_model), collapse = ", "), "\n")
 cat("Fusion modes:", paste(unique(grid$fusion_mode), collapse = ", "), "\n")
 cat("Screening:", paste(unique(grid$screen_method), collapse = ", "), "\n")

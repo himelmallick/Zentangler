@@ -557,7 +557,8 @@ out_sim_source <- file.path(out_dir, paste0(tag, "_simulation_source.csv"))
 
 sim_cache_file <- function(sim_dir, row, task_id) {
   if (is.null(sim_dir) || !nzchar(sim_dir)) return(NULL)
-  file.path(sim_dir, sprintf("job%04d_sim.rds", as.integer(row_value(row, "job_id", task_id))))
+  sim_id <- as.integer(row_value(row, "sim_id", row_value(row, "job_id", task_id)))
+  file.path(sim_dir, sprintf("sim%04d_sim.rds", sim_id))
 }
 
 log_msg <- function(..., .sep = "") {
@@ -607,7 +608,7 @@ if (!is.null(sim_path)) {
   sim <- gen_simmba(
     nsample = as.integer(row_value(row, "nsample", 600L)),
     nrep = as.integer(row_value(row, "nrep", 10L)),
-    seed = as.integer(row_value(row, "seed", 1L)),
+    seed = as.integer(row_value(row, "sim_seed", row_value(row, "seed", 1L))),
     p.train = 1,
     ygen.mode = as.character(row_value(row, "ygen_mode", "LM")),
     outcome.type = outcome_type,
@@ -621,6 +622,7 @@ utils::write.csv(
   data.frame(
     task_id = task_id,
     job_id = as.integer(row_value(row, "job_id", task_id)),
+    sim_id = as.integer(row_value(row, "sim_id", row_value(row, "job_id", task_id))),
     sim_path = ifelse(is.null(sim_path), NA_character_, sim_path),
     used_cache = !is.null(sim_path),
     stringsAsFactors = FALSE
@@ -685,7 +687,7 @@ for (rep_i in seq_len(nrep)) {
             model = multimedia_model,
             bootstrap_repeats = multimedia_bootstrap,
             rf_trees = multimedia_rf_trees,
-            seed = as.integer(row_value(row, "seed", 1L)) + rep_i
+            seed = as.integer(row_value(row, "seed", row_value(row, "sim_seed", 1L))) + rep_i
           )
         ),
         silent = TRUE
