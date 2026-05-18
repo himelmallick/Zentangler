@@ -583,9 +583,19 @@ summarize_recovery <- function(detail) {
       n_active = mean(d$n_active, na.rm = TRUE),
       true_active = mean(d$true_active, na.rm = TRUE),
       false_active = mean(d$false_active, na.rm = TRUE),
-      precision = mean(d$precision, na.rm = TRUE),
+      precision = if (sum(d$n_active, na.rm = TRUE) > 0) {
+        sum(d$true_active, na.rm = TRUE) / sum(d$n_active, na.rm = TRUE)
+      } else {
+        NA_real_
+      },
       recall = mean(d$recall, na.rm = TRUE),
-      fdr = mean(d$fdr, na.rm = TRUE),
+      fdr = if (sum(d$n_active, na.rm = TRUE) > 0) {
+        sum(d$false_active, na.rm = TRUE) / sum(d$n_active, na.rm = TRUE)
+      } else {
+        NA_real_
+      },
+      n_reps = length(idx),
+      n_reps_with_discovery = sum(d$n_active > 0, na.rm = TRUE),
       top50_true = mean(d$top50_true, na.rm = TRUE),
       top50_precision = mean(d$top50_precision, na.rm = TRUE),
       stringsAsFactors = FALSE
