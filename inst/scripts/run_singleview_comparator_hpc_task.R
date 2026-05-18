@@ -142,8 +142,26 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
   # to map the package's returned columns.
   if (method %in% c("hima", "hima2")) {
     if (is.null(x)) return(empty_standardized_method_table())
-    x <- try(as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE), silent = TRUE)
-    if (inherits(x, "try-error") || nrow(x) == 0) return(empty_standardized_method_table())
+
+    # HIMA/HIMA2 objects can have class "hima" while internally behaving
+    # like a named list of same-length vectors (ID, alpha, beta, alpha*beta,
+    # p-value, etc.). as.data.frame() is not reliable for all HIMA versions,
+    # so coerce that list structure explicitly before parsing columns.
+    if (is.list(x) && !is.data.frame(x)) {
+      keep <- vapply(x, function(z) is.atomic(z) && length(z) > 0, logical(1))
+      lens <- vapply(x[keep], length, integer(1))
+      if (length(lens) > 0) {
+        target_len <- max(lens)
+        keep_names <- names(lens)[lens == target_len]
+        x <- try(as.data.frame(x[keep_names], check.names = FALSE, stringsAsFactors = FALSE), silent = TRUE)
+      } else {
+        x <- empty_standardized_method_table()
+      }
+    } else {
+      x <- try(as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE), silent = TRUE)
+    }
+
+    if (inherits(x, "try-error") || is.null(x) || nrow(x) == 0) return(empty_standardized_method_table())
 
     raw_names <- colnames(x)
     safe_names <- make.names(raw_names, unique = TRUE)
