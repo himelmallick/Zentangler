@@ -135,13 +135,28 @@ empty_standardized_method_table <- function() {
 standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_default = 1) {
   all_mediators <- as.character(all_mediators)
 
-  # HIMA/HIMA2 return a selected mediator result table. For these methods,
-  # do not fabricate rows for non-returned mediators with a = NA, b = 0,
-  # p = 1. Those artificial rows make the output look like HIMA estimated
-  # null effects for every mediator, when in fact the parser simply failed
-  # to map the package's returned columns.
+  # HIMA/HIMA2 usually return a selected mediator result table, not a full
+  # feature-level table. For a fair comparison with Zentangler, build a full
+  # feature table first and merge the returned HIMA/HIMA2 p-values onto it.
+  # Features not returned by HIMA/HIMA2 are retained as non-selected features
+  # with p_primary = 1, so the downstream FDR correction is applied over all
+  # tested features rather than only the selected mediator subset.
   if (method %in% c("hima", "hima2")) {
-    if (is.null(x)) return(empty_standardized_method_table())
+    out <- data.frame(
+      rep = rep_id,
+      method = method,
+      omics = view,
+      mediator = all_mediators,
+      a = NA_real_,
+      b = 0,
+      score = 0,
+      abs_score = 0,
+      p_primary = p_default,
+      p_source = "not_returned_by_method",
+      stringsAsFactors = FALSE
+    )
+
+    if (is.null(x)) return(out)
 
     # HIMA/HIMA2 objects can have class "hima" while internally behaving
     # like a named list of same-length vectors (ID, alpha, beta, alpha*beta,
@@ -155,13 +170,13 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
         keep_names <- names(lens)[lens == target_len]
         x <- try(as.data.frame(x[keep_names], check.names = FALSE, stringsAsFactors = FALSE), silent = TRUE)
       } else {
-        x <- empty_standardized_method_table()
+        x <- data.frame()
       }
     } else {
       x <- try(as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE), silent = TRUE)
     }
 
-    if (inherits(x, "try-error") || is.null(x) || nrow(x) == 0) return(empty_standardized_method_table())
+    if (inherits(x, "try-error") || is.null(x) || nrow(x) == 0) return(out)
 
     raw_names <- colnames(x)
     safe_names <- make.names(raw_names, unique = TRUE)
@@ -201,9 +216,7 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
       p_src <- p_col
     }
 
-    out <- data.frame(
-      rep = rep_id,
-      method = method,
+    tmp <- data.frame(
       omics = view,
       mediator = med,
       a = a,
@@ -214,7 +227,19 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
       p_source = p_src,
       stringsAsFactors = FALSE
     )
-    out <- out[!duplicated(out$mediator), , drop = FALSE]
+    tmp <- tmp[!duplicated(tmp$mediator), , drop = FALSE]
+    idx <- match(out$mediator, tmp$mediator)
+    ok <- !is.na(idx)
+
+    out$a[ok] <- tmp$a[idx[ok]]
+    out$b[ok] <- tmp$b[idx[ok]]
+    out$score[ok] <- tmp$score[idx[ok]]
+    out$p_primary[ok] <- tmp$p_primary[idx[ok]]
+    out$p_source[ok] <- tmp$p_source[idx[ok]]
+
+    out$b[!is.finite(out$b)] <- 0
+    out$score[!is.finite(out$score)] <- 0
+    out$abs_score <- abs(out$score)
     out$p_primary[!is.finite(out$p_primary)] <- p_default
     out$p_primary <- pmin(1, pmax(0, out$p_primary))
     return(out)
@@ -499,16 +524,57 @@ run_multimedia_singleview <- function(M,
   out
 }
 
-apply_comparator_fdr <- function(tab, fdr_method = c("BH", "BY")) {
+apply_comparator_fdr <- function(tab, fdr_method = c("BH", "BY"), tested_by_view = NULL) {
   fdr_method <- match.arg(fdr_method)
   if (is.null(tab) || nrow(tab) == 0) return(tab)
+
+  # HIMA/HIMA2 return only a selected mediator table rather than one row for
+  # every tested mediator. For fair FDR correction, adjust over the full
+  # single-view testing universe using p.adjust(..., n = m), while keeping the
+  # output table clean and limited to returned mediators.
+  if (is.null(tested_by_view)) {
+    tested_by_view <- stats::setNames(
+      as.integer(table(tab$omics)),
+      names(table(tab$omics))
+    )
+  } else {
+    tested_names <- names(tested_by_view)
+    tested_by_view <- as.integer(tested_by_view)
+    names(tested_by_view) <- tested_names
+  }
+
+  tested_n_for_view <- function(view) {
+    view <- as.character(view)[1]
+    if (!view %in% names(tested_by_view)) {
+      return(sum(tab$omics == view, na.rm = TRUE))
+    }
+    n <- tested_by_view[[view]]
+    if (is.null(n) || !is.finite(n) || n < 1L) {
+      sum(tab$omics == view, na.rm = TRUE)
+    } else {
+      as.integer(n)
+    }
+  }
+
   tab$q_primary_global <- NA_real_
-  ok <- is.finite(tab$p_primary)
-  tab$q_primary_global[ok] <- p.adjust(tab$p_primary[ok], method = fdr_method)
+  for (method_i in unique(tab$method)) {
+    idx_m <- which(tab$method == method_i)
+    ok_m <- is.finite(tab$p_primary[idx_m])
+    if (any(ok_m)) {
+      n_global <- sum(vapply(unique(tab$omics[idx_m]), tested_n_for_view, integer(1)), na.rm = TRUE)
+      n_global <- max(n_global, sum(ok_m))
+      tab$q_primary_global[idx_m[ok_m]] <- p.adjust(tab$p_primary[idx_m[ok_m]], method = fdr_method, n = n_global)
+    }
+  }
+
   tab$q_primary_within_view <- NA_real_
   for (idx in split(seq_len(nrow(tab)), paste(tab$method, tab$omics, sep = "::"))) {
     ok_i <- is.finite(tab$p_primary[idx])
-    if (any(ok_i)) tab$q_primary_within_view[idx[ok_i]] <- p.adjust(tab$p_primary[idx[ok_i]], method = fdr_method)
+    if (any(ok_i)) {
+      n_view <- tested_n_for_view(tab$omics[idx][1])
+      n_view <- max(n_view, sum(ok_i))
+      tab$q_primary_within_view[idx[ok_i]] <- p.adjust(tab$p_primary[idx[ok_i]], method = fdr_method, n = n_view)
+    }
   }
   tab$q_primary <- tab$q_primary_global
   tab
@@ -829,7 +895,11 @@ for (rep_i in seq_len(nrep)) {
 
     combined <- do.call(rbind, method_tabs)
     rownames(combined) <- NULL
-    combined <- apply_comparator_fdr(combined, fdr_method = fdr_method)
+    combined <- apply_comparator_fdr(
+      combined,
+      fdr_method = fdr_method,
+      tested_by_view = vapply(blocks, ncol, integer(1))
+    )
     all_mediator_rows[[length(all_mediator_rows) + 1L]] <- combined
 
     for (scope_i in eval_scopes) {
