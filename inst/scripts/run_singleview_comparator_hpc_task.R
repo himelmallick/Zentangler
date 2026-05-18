@@ -116,8 +116,92 @@ pick_col <- function(df, candidates) {
   if (length(hit) > 0) hit[1] else NA_character_
 }
 
+empty_standardized_method_table <- function() {
+  data.frame(
+    rep = integer(0),
+    method = character(0),
+    omics = character(0),
+    mediator = character(0),
+    a = numeric(0),
+    b = numeric(0),
+    score = numeric(0),
+    abs_score = numeric(0),
+    p_primary = numeric(0),
+    p_source = character(0),
+    stringsAsFactors = FALSE
+  )
+}
+
 standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_default = 1) {
   all_mediators <- as.character(all_mediators)
+
+  # HIMA/HIMA2 return a selected mediator result table. For these methods,
+  # do not fabricate rows for non-returned mediators with a = NA, b = 0,
+  # p = 1. Those artificial rows make the output look like HIMA estimated
+  # null effects for every mediator, when in fact the parser simply failed
+  # to map the package's returned columns.
+  if (method %in% c("hima", "hima2")) {
+    if (is.null(x)) return(empty_standardized_method_table())
+    x <- try(as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE), silent = TRUE)
+    if (inherits(x, "try-error") || nrow(x) == 0) return(empty_standardized_method_table())
+
+    raw_names <- colnames(x)
+    safe_names <- make.names(raw_names, unique = TRUE)
+    colnames(x) <- safe_names
+
+    pick_hima_col <- function(candidates) {
+      candidate_safe <- make.names(candidates, unique = FALSE)
+      hit <- safe_names[safe_names %in% candidate_safe]
+      if (length(hit) > 0) return(hit[1])
+      hit_raw <- raw_names[raw_names %in% candidates]
+      if (length(hit_raw) > 0) return(make.names(hit_raw[1], unique = FALSE))
+      NA_character_
+    }
+
+    num_hima_col <- function(candidates) {
+      nm <- pick_hima_col(candidates)
+      if (is.na(nm) || !(nm %in% colnames(x))) return(rep(NA_real_, nrow(x)))
+      suppressWarnings(as.numeric(x[[nm]]))
+    }
+
+    id_col <- pick_hima_col(c("mediator", "Mediator", "ID", "Index", "id", "feature", "Feature", "name", "Name"))
+    med <- if (!is.na(id_col) && id_col %in% colnames(x)) as.character(x[[id_col]]) else rownames(x)
+    med[is.na(med) | !nzchar(med)] <- rownames(x)[is.na(med) | !nzchar(med)]
+
+    a <- num_hima_col(c("a", "alpha", "alpha_hat", "alpha.hat", "ahat", "a_hat", "effect.a", "beta.xm"))
+    b <- num_hima_col(c("b", "beta", "beta_hat", "beta.hat", "bhat", "b_hat", "effect.b", "beta.my"))
+    score_from_method <- num_hima_col(c("score", "indirect", "indirect_effect", "indirect.effect", "alpha_beta", "alpha*beta", "ab", "IDE", "NIE"))
+    score <- ifelse(is.finite(score_from_method), score_from_method, a * b)
+
+    p_primary <- num_hima_col(c("p_primary", "p-value", "p.value", "p_value", "pvalue", "p", "pval", "p.val", "p.joint", "p_joint", "pmax", "p.max", "raw.p", "p_raw"))
+    p_col <- pick_hima_col(c("p_primary", "p-value", "p.value", "p_value", "pvalue", "p", "pval", "p.val", "p.joint", "p_joint", "pmax", "p.max", "raw.p", "p_raw"))
+    q_col <- pick_hima_col(c("q", "q.value", "q_value", "qvalue", "FDR", "BH.FDR", "adj.p", "adjusted.p", "padj", "qval"))
+    if (all(!is.finite(p_primary)) && !is.na(q_col)) {
+      p_primary <- suppressWarnings(as.numeric(x[[q_col]]))
+      p_src <- q_col
+    } else {
+      p_src <- p_col
+    }
+
+    out <- data.frame(
+      rep = rep_id,
+      method = method,
+      omics = view,
+      mediator = med,
+      a = a,
+      b = b,
+      score = score,
+      abs_score = abs(score),
+      p_primary = p_primary,
+      p_source = p_src,
+      stringsAsFactors = FALSE
+    )
+    out <- out[!duplicated(out$mediator), , drop = FALSE]
+    out$p_primary[!is.finite(out$p_primary)] <- p_default
+    out$p_primary <- pmin(1, pmax(0, out$p_primary))
+    return(out)
+  }
+
   out <- data.frame(
     rep = rep_id,
     method = method,
@@ -204,6 +288,8 @@ run_hima_singleview <- function(M, pheno, x_var = "A", y_var = "Y", y_family = "
   if ("topN" %in% argn) call_args$topN <- ncol(data_M)
   if ("sigcut" %in% argn) call_args$sigcut <- 1
   if ("Sigcut" %in% argn) call_args$Sigcut <- 1
+  if ("FDRcut" %in% argn) call_args$FDRcut <- 1
+  if ("Bonfcut" %in% argn) call_args$Bonfcut <- 1
   if ("scale" %in% argn) call_args$scale <- FALSE
   if ("verbose" %in% argn) call_args$verbose <- FALSE
   if ("parallel" %in% argn) call_args$parallel <- FALSE
@@ -242,6 +328,8 @@ run_hima2_singleview <- function(M, pheno, x_var = "A", y_var = "Y", y_family = 
   if ("topN" %in% argn) call_args$topN <- ncol(data_M)
   if ("sigcut" %in% argn) call_args$sigcut <- 1
   if ("Sigcut" %in% argn) call_args$Sigcut <- 1
+  if ("FDRcut" %in% argn) call_args$FDRcut <- 1
+  if ("Bonfcut" %in% argn) call_args$Bonfcut <- 1
   if ("scale" %in% argn) call_args$scale <- FALSE
   if ("verbose" %in% argn) call_args$verbose <- FALSE
   if ("parallel" %in% argn) call_args$parallel <- FALSE
