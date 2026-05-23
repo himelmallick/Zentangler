@@ -592,11 +592,11 @@ score_truth_recovery <- function(tab, truth_key, rep, method, q_threshold, q_col
       true_active = 0,
       false_active = 0,
       n_true = sum(truth_key$is_true, na.rm = TRUE),
-      precision = NA_real_,
+      precision = 0,
       recall = 0,
-      fdr = NA_real_,
+      fdr = 0,
       top50_true = 0,
-      top50_precision = NA_real_,
+      top50_precision = 0,
       stringsAsFactors = FALSE
     ))
   }
@@ -615,7 +615,7 @@ score_truth_recovery <- function(tab, truth_key, rep, method, q_threshold, q_col
   ord <- order(tab$abs_score, decreasing = TRUE, na.last = NA)
   top_idx <- head(ord, min(as.integer(top_n), length(ord)))
   top_true <- sum(is_true[top_idx], na.rm = TRUE)
-  top_precision <- if (length(top_idx) > 0) top_true / length(top_idx) else NA_real_
+  top_precision <- if (length(top_idx) > 0) top_true / length(top_idx) else 0
 
   data.frame(
     rep = rep,
@@ -627,9 +627,9 @@ score_truth_recovery <- function(tab, truth_key, rep, method, q_threshold, q_col
     true_active = true_active,
     false_active = false_active,
     n_true = n_true,
-    precision = if (n_active > 0) true_active / n_active else NA_real_,
-    recall = if (n_true > 0) true_active / n_true else NA_real_,
-    fdr = if (n_active > 0) false_active / n_active else NA_real_,
+    precision = if (n_active > 0) true_active / n_active else 0,
+    recall = if (n_true > 0) true_active / n_true else 0,
+    fdr = if (n_active > 0) false_active / n_active else 0,
     top50_true = top_true,
     top50_precision = top_precision,
     stringsAsFactors = FALSE
@@ -644,26 +644,33 @@ summarize_recovery <- function(detail) {
     d <- detail[idx, , drop = FALSE]
     g <- d[1L, group_cols, drop = FALSE]
     rownames(g) <- NULL
+    mean_metric <- function(x) {
+      x <- ifelse(is.finite(x), x, 0)
+      mean(x)
+    }
     data.frame(
       g,
-      n_active = mean(d$n_active, na.rm = TRUE),
-      true_active = mean(d$true_active, na.rm = TRUE),
-      false_active = mean(d$false_active, na.rm = TRUE),
-      precision = if (sum(d$n_active, na.rm = TRUE) > 0) {
+      n_active = mean_metric(d$n_active),
+      true_active = mean_metric(d$true_active),
+      false_active = mean_metric(d$false_active),
+      n_true = mean_metric(d$n_true),
+      precision = mean_metric(d$precision),
+      precision_discovery_only = if (sum(d$n_active, na.rm = TRUE) > 0) {
         sum(d$true_active, na.rm = TRUE) / sum(d$n_active, na.rm = TRUE)
       } else {
         NA_real_
       },
-      recall = mean(d$recall, na.rm = TRUE),
-      fdr = if (sum(d$n_active, na.rm = TRUE) > 0) {
+      recall = mean_metric(d$recall),
+      fdr = mean_metric(d$fdr),
+      fdr_discovery_only = if (sum(d$n_active, na.rm = TRUE) > 0) {
         sum(d$false_active, na.rm = TRUE) / sum(d$n_active, na.rm = TRUE)
       } else {
         NA_real_
       },
       n_reps = length(idx),
       n_reps_with_discovery = sum(d$n_active > 0, na.rm = TRUE),
-      top50_true = mean(d$top50_true, na.rm = TRUE),
-      top50_precision = mean(d$top50_precision, na.rm = TRUE),
+      top50_true = mean_metric(d$top50_true),
+      top50_precision = mean_metric(d$top50_precision),
       stringsAsFactors = FALSE
     )
   })
