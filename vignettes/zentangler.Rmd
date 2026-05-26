@@ -360,8 +360,7 @@ fit_surv <- fit_multiview_parallel_zentangler(
   survival_time_var = "time",
   survival_event_var = "status",
   fusion_mode = "early",
-  b_inference = "bootstrap",
-  bootstrap_repeats = 100
+  b_inference = "refit"
 )
 ```
 
@@ -705,6 +704,76 @@ res <- run_intersim_zentangler(
 )
 
 res$summary
+```
+
+Binary simulations use `outcome.type = "binary"` and fit the Y-stage with
+`y_family = "binomial"`:
+
+```{r}
+sim_binary <- gen_simmba(
+  nsample = 100,
+  nrep = 1,
+  outcome.type = "binary",
+  ygen.mode = "LM",
+  seed = 1
+)
+
+binary_fit <- fit_multiview_parallel_zentangler(
+  sim_binary$trainMae[[1]],
+  x_var = "A",
+  y_var = "Y",
+  y_family = "binomial",
+  fusion_mode = "early",
+  b_inference = "debiased_logistic_lasso",
+  sis_n = 50,
+  screen_method = "sis",
+  seed = 1
+)
+
+head(zentangler_all_mediators(binary_fit))
+```
+
+Survival simulations use `outcome.type = "survival"` and store the outcome as
+`time` plus 0/1 `status`. For quick checks without bootstrap, use Cox refit or
+the Cox lasso B-stage approximation:
+
+```{r}
+sim_surv <- gen_simmba(
+  nsample = 100,
+  nrep = 1,
+  outcome.type = "survival",
+  ygen.mode = "LM",
+  seed = 1
+)
+
+surv_fit_refit <- fit_multiview_parallel_zentangler(
+  sim_surv$trainMae[[1]],
+  x_var = "A",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  fusion_mode = "early",
+  b_inference = "refit",
+  sis_n = 50,
+  screen_method = "sis",
+  seed = 1
+)
+
+surv_fit_cox <- fit_multiview_parallel_zentangler(
+  sim_surv$trainMae[[1]],
+  x_var = "A",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  fusion_mode = "early",
+  b_inference = "debiased_cox_lasso",
+  sis_n = 50,
+  screen_method = "sis",
+  seed = 1
+)
+
+head(zentangler_all_mediators(surv_fit_refit))
+head(zentangler_all_mediators(surv_fit_cox))
 ```
 
 The simulation wrapper returns:

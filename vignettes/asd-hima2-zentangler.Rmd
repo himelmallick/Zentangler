@@ -324,7 +324,7 @@ mae_block <- function(mae, view) {
   )
 }
 
-run_hima2_one_view <- function(M, pheno, penalty = "DBlasso") {
+run_hima2_one_view <- function(M, pheno, penalty = "DBlasso", outcome_family = "gaussian") {
   fun <- get("hima2", envir = asNamespace("HIMA"))
   argn <- names(formals(fun))
   data_M <- as.data.frame(M, check.names = FALSE)
@@ -335,7 +335,7 @@ run_hima2_one_view <- function(M, pheno, penalty = "DBlasso") {
     if ("data.M" %in% argn) call_args$data.M <- data_M
     if ("mediator.type" %in% argn) call_args$mediator.type <- "gaussian"
     if ("mediator.family" %in% argn) call_args$mediator.family <- "gaussian"
-    if ("outcome.family" %in% argn) call_args$outcome.family <- "gaussian"
+    if ("outcome.family" %in% argn) call_args$outcome.family <- outcome_family
     if ("penalty" %in% argn) call_args$penalty <- penalty
     if ("scale" %in% argn) call_args$scale <- FALSE
     if ("verbose" %in% argn) call_args$verbose <- FALSE
@@ -396,7 +396,8 @@ run_hima2_mae <- function(mae,
                           x_var = "X",
                           y_var = "Y",
                           rep = NA_integer_,
-                          penalty = "DBlasso") {
+                          penalty = "DBlasso",
+                          outcome_family = "gaussian") {
   pheno <- as.data.frame(SummarizedExperiment::colData(mae))
   if (!(x_var %in% colnames(pheno))) stop("x_var not found in MAE colData: ", x_var)
   if (!(y_var %in% colnames(pheno))) stop("y_var not found in MAE colData: ", y_var)
@@ -414,7 +415,7 @@ run_hima2_mae <- function(mae,
       next
     }
 
-    fit <- run_hima2_one_view(M, pheno_view, penalty = penalty)
+    fit <- run_hima2_one_view(M, pheno_view, penalty = penalty, outcome_family = outcome_family)
     results[[view]] <- standardize_hima2_table(fit, view, rep = rep)
   }
 
@@ -689,4 +690,166 @@ legend(
   bty = "n"
 )
 
+```
+
+## Binary Simulation Check
+
+For binary outcomes, SIMMBA stores the generated outcome in `Y`. Zentangler uses
+`y_family = "binomial"`, and HIMA2 is run with `outcome_family = "binomial"`
+when the installed HIMA API exposes that argument.
+
+```{r}
+set.seed(1)
+
+sim_binary <- gen_simmba(
+  nsample = 100,
+  nrep = 1,
+  snr = 1,
+  n.pathways = 10,
+  TIE = rep(1, 3),
+  outcome.type = "binary",
+  ygen.mode = "LM",
+  seed = 1
+)
+
+binary_mae <- sim_binary$trainMae[[1]]
+binary_truth <- sim_binary$truthDat[[1]]
+binary_truth_key <- zentangler_truth_key(binary_truth)
+
+binary_fit <- fit_multiview_parallel_zentangler(
+  binary_mae,
+  x_var = "A",
+  y_var = "Y",
+  y_family = "binomial",
+  fusion_mode = "early",
+  b_inference = "debiased_logistic_lasso",
+  sis_n = 50,
+  screen_method = "sis",
+  fdr_method = "BH",
+  fdr_scope = "global",
+  fill_nonfinite_zero = TRUE,
+  seed = 1
+)
+
+binary_zentangler_tab <- zentangler_all_mediators(binary_fit)
+binary_zentangler_recovery <- zentangler_score_truth_recovery(
+  binary_zentangler_tab,
+  truth_key = binary_truth_key,
+  rep = 1,
+  fusion_mode = "early_binary",
+  q_threshold = 0.25,
+  q_col = "q_primary",
+  fdr_scope = "global",
+  top_n = 50
+)
+
+binary_hima2_tab <- tryCatch(
+  run_hima2_mae(
+    binary_mae,
+    x_var = "A",
+    y_var = "Y",
+    rep = 1,
+    outcome_family = "binomial"
+  ),
+  error = function(e) data.frame()
+)
+
+binary_hima2_recovery <- if (nrow(binary_hima2_tab) > 0) {
+  zentangler_score_truth_recovery(
+    binary_hima2_tab,
+    truth_key = binary_truth_key,
+    rep = 1,
+    fusion_mode = "singleview_hima2_binary",
+    q_threshold = 0.25,
+    q_col = "q_primary",
+    fdr_scope = "global",
+    top_n = 50
+  )
+} else {
+  data.frame()
+}
+
+binary_zentangler_recovery
+binary_hima2_recovery
+```
+
+## Survival Simulation Check
+
+For survival outcomes, SIMMBA stores the outcome as `time` and `status`.
+Zentangler supports Cox survival Y-stage models. This quick check avoids
+bootstrap and compares the two non-bootstrap survival B-stage options.
+
+```{r}
+set.seed(1)
+
+sim_surv <- gen_simmba(
+  nsample = 100,
+  nrep = 1,
+  snr = 1,
+  n.pathways = 10,
+  TIE = rep(1, 3),
+  outcome.type = "survival",
+  ygen.mode = "LM",
+  seed = 1
+)
+
+surv_mae <- sim_surv$trainMae[[1]]
+surv_truth <- sim_surv$truthDat[[1]]
+surv_truth_key <- zentangler_truth_key(surv_truth)
+
+surv_fit_refit <- fit_multiview_parallel_zentangler(
+  surv_mae,
+  x_var = "A",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  fusion_mode = "early",
+  b_inference = "refit",
+  sis_n = 10,
+  screen_method = "sis",
+  fdr_method = "BH",
+  fdr_scope = "global",
+  fill_nonfinite_zero = TRUE,
+  seed = 1
+)
+
+surv_fit_cox <- fit_multiview_parallel_zentangler(
+  surv_mae,
+  x_var = "A",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  fusion_mode = "early",
+  b_inference = "debiased_cox_lasso",
+  sis_n = 10,
+  screen_method = "sis",
+  fdr_method = "BH",
+  fdr_scope = "global",
+  fill_nonfinite_zero = TRUE,
+  seed = 1
+)
+
+surv_refit_recovery <- zentangler_score_truth_recovery(
+  zentangler_all_mediators(surv_fit_refit),
+  truth_key = surv_truth_key,
+  rep = 1,
+  fusion_mode = "early_survival_refit",
+  q_threshold = 0.25,
+  q_col = "q_primary",
+  fdr_scope = "global",
+  top_n = 50
+)
+
+surv_cox_recovery <- zentangler_score_truth_recovery(
+  zentangler_all_mediators(surv_fit_cox),
+  truth_key = surv_truth_key,
+  rep = 1,
+  fusion_mode = "early_survival_debiased_cox_lasso",
+  q_threshold = 0.25,
+  q_col = "q_primary",
+  fdr_scope = "global",
+  top_n = 50
+)
+
+surv_cox_recovery
 ```

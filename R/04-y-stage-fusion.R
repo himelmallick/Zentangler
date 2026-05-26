@@ -308,11 +308,11 @@ fit_y_multiview_late_fusion_lasso <- function(
   } else if (identical(y_family, "gaussian")) {
     meta_dat$Y <- Y
     meta_formula <- as.formula(paste("Y ~", paste(pred_cols, collapse = " + ")))
-    lm(meta_formula, data = meta_dat)
+    meta_fit <- lm(meta_formula, data = meta_dat)
   } else {
     meta_dat$Y <- Y
     meta_formula <- as.formula(paste("Y ~", paste(pred_cols, collapse = " + ")))
-    glm(meta_formula, data = meta_dat, family = binomial())
+    meta_fit <- glm(meta_formula, data = meta_dat, family = binomial())
   }
 
   meta_co <- coef(meta_fit)
