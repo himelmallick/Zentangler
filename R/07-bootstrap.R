@@ -37,16 +37,18 @@ extract_bootstrap_vectors <- function(fit, key_ref) {
   tab <- fit$combined_mediators
   key <- paste(tab$omics, tab$mediator, sep = "::")
   score <- setNames(rep(NA_real_, length(key_ref)), key_ref)
+  b <- setNames(rep(NA_real_, length(key_ref)), key_ref)
   active <- setNames(rep(NA_real_, length(key_ref)), key_ref)
 
   hit <- match(key_ref, key)
   ok <- !is.na(hit)
   if (any(ok)) {
     score[ok] <- tab$score[hit[ok]]
+    b[ok] <- tab$b[hit[ok]]
     active[ok] <- as.numeric(is.finite(tab$b[hit[ok]]) & tab$b[hit[ok]] != 0)
   }
 
-  list(score = score, active = active)
+  list(score = score, b = b, active = active)
 }
 
 add_bootstrap_columns <- function(combined, score_mat, active_mat, ci_level = 0.95) {
@@ -61,6 +63,18 @@ add_bootstrap_columns <- function(combined, score_mat, active_mat, ci_level = 0.
   combined$p_score_boot <- bootstrap_score_pvalues(observed = combined$score, score_mat = score_mat)
   combined$p_score_boot_sign <- bootstrap_score_sign_pvalues(score_mat = score_mat)
   combined$p_primary_bootstrap <- combined$p_score_boot
+  combined
+}
+
+add_b_bootstrap_columns <- function(combined, b_mat, ci_level = 0.95) {
+  if (is.null(b_mat) || nrow(b_mat) == 0 || nrow(combined) == 0) return(combined)
+
+  alpha <- 1 - ci_level
+  combined$b_boot_mean <- apply(b_mat, 2, mean, na.rm = TRUE)
+  combined$b_boot_sd <- apply(b_mat, 2, stats::sd, na.rm = TRUE)
+  combined$b_boot_low <- apply(b_mat, 2, stats::quantile, probs = alpha / 2, na.rm = TRUE, names = FALSE)
+  combined$b_boot_high <- apply(b_mat, 2, stats::quantile, probs = 1 - alpha / 2, na.rm = TRUE, names = FALSE)
+  combined$p_b_bootstrap <- bootstrap_score_pvalues(observed = combined$b, score_mat = b_mat)
   combined
 }
 
@@ -155,8 +169,10 @@ bootstrap_multiview_fit <- function(
   if (bootstrap_repeats < 1L) return(NULL)
 
   score_mat <- matrix(NA_real_, nrow = bootstrap_repeats, ncol = length(key_ref))
+  b_mat <- matrix(NA_real_, nrow = bootstrap_repeats, ncol = length(key_ref))
   active_mat <- matrix(NA_real_, nrow = bootstrap_repeats, ncol = length(key_ref))
   colnames(score_mat) <- key_ref
+  colnames(b_mat) <- key_ref
   colnames(active_mat) <- key_ref
   effect_rows <- list()
   failures <- character(0)
@@ -182,6 +198,7 @@ bootstrap_multiview_fit <- function(
       NULL
     }
 
+    b_inference_b <- if (identical(b_inference, "bootstrap")) "refit" else b_inference
     fit_b <- try(
       fit_multiview_parallel_zentangler_blocks(
         blocks = bt$blocks,
@@ -208,7 +225,7 @@ bootstrap_multiview_fit <- function(
         fdr_method = fdr_method,
         fdr_scope = fdr_scope,
         primary_inference = "model_based",
-        b_inference = b_inference,
+        b_inference = b_inference_b,
         debias_max_targets = debias_max_targets,
         coop_rho = coop_rho,
         coop_maxit = coop_maxit,
@@ -228,6 +245,7 @@ bootstrap_multiview_fit <- function(
 
     vec <- extract_bootstrap_vectors(fit_b, key_ref = key_ref)
     score_mat[b, ] <- vec$score
+    b_mat[b, ] <- vec$b
     active_mat[b, ] <- vec$active
     effect_rows[[length(effect_rows) + 1L]] <- fit_b$effect_decomposition
   }
@@ -242,6 +260,7 @@ bootstrap_multiview_fit <- function(
 
   list(
     score_matrix = score_mat,
+    b_matrix = b_mat,
     active_matrix = active_mat,
     effect_decomposition = effect_boot,
     ci_level = bootstrap_ci_level,
@@ -250,4 +269,3 @@ bootstrap_multiview_fit <- function(
     failures = failures
   )
 }
-

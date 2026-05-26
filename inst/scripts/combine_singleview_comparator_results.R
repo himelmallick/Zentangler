@@ -39,12 +39,44 @@ read_with_file <- function(path) {
   x
 }
 
-combine_type <- function(results_dir, pattern, out_file, label) {
+parse_singleview_summary_name <- function(path) {
+  b <- basename(path)
+  data.frame(
+    job_id = as.integer(sub("^job([0-9]+)_.*$", "\\1", b)),
+    sample_name = sub("^.*_(n[0-9]+)_.*$", "\\1", b),
+    nsample = as.integer(sub("^.*_n([0-9]+)_.*$", "\\1", b)),
+    correction = sub("^.*_q([A-Za-z]+)grid.*$", "\\1", b),
+    snr = suppressWarnings(as.numeric(sub("^.*_snr([0-9p.]+)_.*$", "\\1", b))),
+    n_pathways = as.integer(sub("^.*_path([0-9]+)_.*$", "\\1", b)),
+    tie = suppressWarnings(as.numeric(gsub("p", ".", sub("^.*_tie([0-9p.]+)_summary[.]csv$", "\\1", b)))),
+    stringsAsFactors = FALSE
+  )
+}
+
+add_summary_metrics <- function(x, path) {
+  meta <- parse_singleview_summary_name(path)
+  x <- cbind(meta[rep(1L, nrow(x)), , drop = FALSE], x)
+  if (!("correction" %in% names(x)) && "fdr_method" %in% names(x)) x$correction <- x$fdr_method
+  if ("correction" %in% names(x) && "fdr_method" %in% names(x)) {
+    x$correction[is.na(x$correction) | !nzchar(x$correction)] <- x$fdr_method[is.na(x$correction) | !nzchar(x$correction)]
+  }
+  if (all(c("precision", "recall") %in% names(x))) {
+    denom <- x$precision + x$recall
+    x$f1_score <- ifelse(is.finite(denom) & denom > 0, 2 * x$precision * x$recall / denom, NA_real_)
+  }
+  x
+}
+
+combine_type <- function(results_dir, pattern, out_file, label, transform = NULL) {
   files <- list.files(results_dir, pattern = pattern, full.names = TRUE)
   cat(label, "files:", length(files), "\n")
   if (length(files) == 0) return(invisible(data.frame()))
   out <- bind_fill(lapply(files, function(f) {
-    tryCatch(read_with_file(f), error = function(e) {
+    tryCatch({
+      x <- read_with_file(f)
+      if (!is.null(transform)) x <- transform(x, f)
+      x
+    }, error = function(e) {
       data.frame(source_file = basename(f), read_error = conditionMessage(e), stringsAsFactors = FALSE)
     })
   }))
@@ -58,7 +90,13 @@ results_dir <- args$`results-dir` %||% args$results_dir %||% "singleview_compara
 out_dir <- args$`out-dir` %||% args$out_dir %||% results_dir
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
-combine_type(results_dir, "_summary[.]csv$", file.path(out_dir, "combined_singleview_summary.csv"), "summary")
+combine_type(
+  results_dir,
+  "_summary[.]csv$",
+  file.path(out_dir, "combined_singleview_summary.csv"),
+  "summary",
+  transform = add_summary_metrics
+)
 combine_type(results_dir, "_detail[.]csv$", file.path(out_dir, "combined_singleview_detail.csv"), "detail")
 combine_type(results_dir, "_mediators[.]csv$", file.path(out_dir, "combined_singleview_mediators.csv"), "mediators")
 combine_type(results_dir, "_settings[.]csv$", file.path(out_dir, "combined_singleview_settings.csv"), "settings")

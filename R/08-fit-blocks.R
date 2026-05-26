@@ -5,8 +5,17 @@
 fit_multiview_parallel_zentangler_blocks <- function(
   blocks,
   pheno_df,
-  x_var,
-  y_var,
+  x_var = NULL,
+  y_var = NULL,
+  study_design = c("standard", "case_control", "time", "case_control_time"),
+  case_var = NULL,
+  case_level = NULL,
+  control_level = NULL,
+  time_var = NULL,
+  time_ref = NULL,
+  time_compare = NULL,
+  exposure_role = c("time", "case", "interaction"),
+  add_design_covariates = TRUE,
   method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2", "full_exploratory"),
   covariates = NULL,
   residualize = FALSE,
@@ -27,7 +36,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
   primary_inference = c("model_based", "bootstrap_score"),
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -55,7 +64,34 @@ fit_multiview_parallel_zentangler_blocks <- function(
   fdr_scope <- validate_fdr_scope(fdr_scope)
   primary_inference <- validate_primary_inference(primary_inference)
   b_inference <- match.arg(b_inference)
+  bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
   set.seed(seed)
+  if (is.null(y_var) || length(y_var) != 1L || !nzchar(as.character(y_var))) {
+    stop("y_var is required.", call. = FALSE)
+  }
+  y_var <- as.character(y_var)
+
+  design <- prepare_zentangler_study_design(
+    pheno_df = pheno_df,
+    x_var = x_var,
+    covariates = covariates,
+    study_design = study_design,
+    case_var = case_var,
+    case_level = case_level,
+    control_level = control_level,
+    time_var = time_var,
+    time_ref = time_ref,
+    time_compare = time_compare,
+    exposure_role = exposure_role,
+    add_design_covariates = add_design_covariates,
+    effect_x0 = effect_x0,
+    effect_x1 = effect_x1
+  )
+  pheno_df <- design$pheno_df
+  x_var <- design$x_var
+  covariates <- design$covariates
+  effect_x0 <- design$effect_x0
+  effect_x1 <- design$effect_x1
 
   feature_counts_before <- vapply(blocks, function(x) ncol(as.data.frame(x)), integer(1))
 
@@ -140,6 +176,13 @@ fit_multiview_parallel_zentangler_blocks <- function(
     coop_tol = coop_tol
   )
 
+  b_inference_requested <- b_inference
+  b_inference_for_initial <- if (identical(b_inference, "bootstrap")) "refit" else b_inference
+  if (identical(b_inference, "bootstrap") && bootstrap_repeats < 1L) {
+    warning("b_inference='bootstrap' requires bootstrap_repeats > 0; using active-set refit B-path p-values.")
+    b_inference_for_initial <- "refit"
+  }
+
   p_b_infer <- infer_p_b_multiview(
     Y = Y_model,
     X = X_model,
@@ -147,7 +190,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     C = C_model,
     coef_by_view = yfit$coef_by_view,
     y_family = y_family,
-    method = b_inference,
+    method = b_inference_for_initial,
     lambda_choice = lambda_choice,
     max_debias_targets = debias_max_targets
   )
@@ -192,7 +235,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
 
   key_ref <- paste(combined$omics, combined$mediator, sep = "::")
   bootstrap <- NULL
-  if (as.integer(bootstrap_repeats) > 0L) {
+  if (bootstrap_repeats > 0L) {
     bootstrap <- bootstrap_multiview_fit(
       blocks = blocks0,
       pheno_df = al$pheno,
@@ -237,6 +280,25 @@ fit_multiview_parallel_zentangler_blocks <- function(
       active_mat = bootstrap$active_matrix,
       ci_level = bootstrap_ci_level
     )
+    combined <- add_b_bootstrap_columns(
+      combined = combined,
+      b_mat = bootstrap$b_matrix,
+      ci_level = bootstrap_ci_level
+    )
+    if (identical(b_inference, "bootstrap") && "p_b_bootstrap" %in% colnames(combined)) {
+      has_boot_p <- is.finite(combined$p_b_bootstrap)
+      combined$p_b_model_based <- combined$p_b
+      combined$p_b[has_boot_p] <- combined$p_b_bootstrap[has_boot_p]
+      combined$joint_p_ab <- NA_real_
+      both_legs <- is.finite(combined$p_a) & is.finite(combined$p_b)
+      combined$joint_p_ab[both_legs] <- pmax(combined$p_a[both_legs], combined$p_b[both_legs])
+      combined$p_primary_model_based <- combined$joint_p_ab
+      combined$p_primary <- combined$p_primary_model_based
+      combined <- apply_primary_fdr_scope(combined, fdr_method = fdr_method, fdr_scope = fdr_scope)
+      combined <- combined[order(combined$abs_score, decreasing = TRUE), , drop = FALSE]
+      rownames(combined) <- NULL
+      p_b_infer$method <- "bootstrap_b_path"
+    }
     effect_decomposition <- add_effect_bootstrap_columns(
       effect_decomposition = effect_decomposition,
       effect_boot = bootstrap$effect_decomposition,
@@ -255,6 +317,19 @@ fit_multiview_parallel_zentangler_blocks <- function(
       combined <- combined[order(combined$abs_score, decreasing = TRUE), , drop = FALSE]
       rownames(combined) <- NULL
     }
+  }
+
+  for (view in names(view_tables)) {
+    idx <- combined$omics == view
+    p_b_map <- setNames(combined$p_b[idx], combined$mediator[idx])
+    joint_map <- setNames(combined$joint_p_ab[idx], combined$mediator[idx])
+    hit_p <- match(view_tables[[view]]$mediator, names(p_b_map))
+    ok_p <- !is.na(hit_p)
+    view_tables[[view]]$p_b[ok_p] <- p_b_map[hit_p[ok_p]]
+    hit_joint <- match(view_tables[[view]]$mediator, names(joint_map))
+    ok_joint <- !is.na(hit_joint)
+    view_tables[[view]]$joint_p_ab[ok_joint] <- joint_map[hit_joint[ok_joint]]
+    view_tables[[view]]$p_primary <- view_tables[[view]]$joint_p_ab
   }
 
   views_out <- lapply(names(blocks_model), function(view) {
@@ -295,6 +370,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
   settings_out <- list(
     method_preset = method_preset,
     input_container = "matrix_blocks",
+    study_design = design$design_info$study_design,
+    design_info = design$design_info,
     x_var = x_var,
     y_var = y_var,
     view_names = names(blocks_model),
@@ -321,9 +398,13 @@ fit_multiview_parallel_zentangler_blocks <- function(
     primary_inference_used = primary_inference_used,
     glmnet_penalty = glmnet_alpha_label(if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha),
     glmnet_alpha_used_in_y_stage = if (identical(fusion_mode, "intermediate")) 1 else glmnet_alpha,
-    b_inference = b_inference,
+    b_inference = b_inference_requested,
     b_inference_method = p_b_infer$method,
-    b_inference_note = if (identical(b_inference, "debiased_lasso") && !isTRUE(all.equal(glmnet_alpha, 1))) {
+    b_inference_note = if (identical(b_inference_requested, "bootstrap") && bootstrap_repeats < 1L) {
+      "Requested bootstrap B-path inference, but bootstrap_repeats was 0; active-set refit B-path p-values were used."
+    } else if (identical(b_inference_requested, "bootstrap")) {
+      "B-path p-values use bootstrap refits of the B-path coefficient; p_b_model_based retains the initial active-set refit p-value."
+    } else if (identical(b_inference_requested, "debiased_lasso") && !isTRUE(all.equal(glmnet_alpha, 1))) {
       "B-path p-values use the current HIMA-style de-biased lasso routine; elastic-net alpha changes early/late Y-stage coefficient fitting, not the de-biased inference formula."
     } else {
       NA_character_
@@ -364,4 +445,3 @@ fit_multiview_parallel_zentangler_blocks <- function(
     fits = if (return_fits) yfit else NULL
   )
 }
-

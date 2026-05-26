@@ -76,7 +76,7 @@ run_intersim_zentangler <- function(
   maaslin2_analysis_method = "LM",
   maaslin2_standardize = FALSE,
   maaslin2_output_dir = NULL,
-  b_inference = c("debiased_lasso", "refit"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   residualize = FALSE,

@@ -1,0 +1,692 @@
+---
+title: "ASD multi-omics tutorial: HIMA2 and Zentangler"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{ASD multi-omics tutorial: HIMA2 and Zentangler}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+   warning = F, message = F
+)
+```
+
+# Overview
+
+This tutorial shows how to run two mediation workflows on the ASD multi-omics
+example files in `data/`:
+
+1. **HIMA2** as a single-view comparator, run independently for each modality.
+2. **Zentangler** as a multiview mediation model over all available modalities.
+
+The example files are:
+
+```text
+data/ASD_Species.RData
+data/ASD_KOs.RData
+data/ASD_fecalMetabolites.RData
+data/ASD_plasmaMetabolites.RData
+data/ASD_Symptoms.RData
+```
+
+# Packages
+
+```{r}
+library(Zentangler)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+library(S4Vectors)
+
+# HIMA is needed only for the single-view HIMA2 comparator.
+if (!requireNamespace("HIMA", quietly = TRUE)) {
+  stop("Install HIMA before running the HIMA2 part of this tutorial.")
+}
+if (!exists("hima2", envir = asNamespace("HIMA"), inherits = FALSE)) {
+  stop("The installed HIMA package does not expose HIMA::hima2().")
+}
+```
+
+# Load The ASD Data
+
+The omics `.RData` files each contain a `pcl` list with `features`, `metadata`,
+and `features_metadata`. The symptom file contains a long table with columns
+`ID`, `Symptom`, `Timepoint`, and `Score`.
+
+```{r}
+find_data_dir <- function() {
+  env_dir <- Sys.getenv("ZENTANGLER_DATA_DIR", unset = "")
+  candidates <- c(
+    env_dir,
+    "data",
+    file.path("..", "data"),
+    file.path(getwd(), "data"),
+    file.path(dirname(getwd()), "data")
+  )
+  candidates <- candidates[nzchar(candidates)]
+  hits <- candidates[dir.exists(candidates)]
+  if (length(hits) == 0) {
+    stop(
+      "Could not find the ASD data directory. Set ZENTANGLER_DATA_DIR to ",
+      "the folder containing ASD_Species.RData, ASD_KOs.RData, ",
+      "ASD_fecalMetabolites.RData, ASD_plasmaMetabolites.RData, and ",
+      "ASD_Symptoms.RData."
+    )
+  }
+  normalizePath(hits[[1]], mustWork = TRUE)
+}
+
+data_dir <- find_data_dir()
+data_dir
+
+read_pcl <- function(path) {
+  e <- new.env(parent = emptyenv())
+  load(path, envir = e)
+  if (!exists("pcl", envir = e, inherits = FALSE)) {
+    stop("Expected object `pcl` in ", path)
+  }
+  get("pcl", envir = e)
+}
+
+omics_files <- c(
+  species = "ASD_Species.RData",
+  kos = "ASD_KOs.RData",
+  fecal_metabolites = "ASD_fecalMetabolites.RData",
+  plasma_metabolites = "ASD_plasmaMetabolites.RData"
+)
+
+omics <- lapply(file.path(data_dir, omics_files), read_pcl)
+names(omics) <- names(omics_files)
+symptoms <- read_pcl(file.path(data_dir, "ASD_Symptoms.RData"))$features
+```
+
+# Build A MultiAssayExperiment
+
+For the ASD tutorial, the exposure is treatment time:
+
+```text
+X = 0 at baseline T0
+X = 1 at follow-up T1 or T2
+```
+
+The outcome is one symptom score. The helper below builds a
+`MultiAssayExperiment` for one contrast and one symptom. The returned MAE uses
+subject-time IDs as primary sample IDs so the modalities and phenotype table are
+aligned.
+
+```{r}
+normalize_omics_time <- function(x) {
+  z <- toupper(trimws(as.character(x)))
+  out <- rep(NA_character_, length(z))
+  out[z %in% c("1", "0", "T0", "BASELINE")] <- "T0"
+  out[z %in% c("3", "10", "T1", "10WK", "WEEK10", "MTT_10WK")] <- "T1"
+  out[z %in% c("2YR", "2YR_FOLLOWUP", "T2", "YEAR2", "2Y")] <- "T2"
+  out
+}
+
+normalize_symptom_time <- function(x) {
+  z <- toupper(trimws(as.character(x)))
+  out <- rep(NA_character_, length(z))
+  out[z %in% c("T0", "BASELINE", "0")] <- "T0"
+  out[z %in% c("T1", "10", "10WK", "WEEK10", "1")] <- "T1"
+  out[z %in% c("T2", "2YR", "2YR_FOLLOWUP", "2")] <- "T2"
+  out
+}
+
+make_primary_id <- function(subject_id, timepoint) {
+  paste(as.character(subject_id), as.character(timepoint), sep = "__")
+}
+
+numeric_feature_matrix <- function(x, fill_zero = TRUE, scale_features = TRUE) {
+  x <- as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE)
+  mat <- as.matrix(data.frame(lapply(x, function(z) {
+    suppressWarnings(as.numeric(as.character(z)))
+  }), check.names = FALSE))
+  colnames(mat) <- colnames(x)
+  rownames(mat) <- rownames(x)
+  storage.mode(mat) <- "numeric"
+  if (fill_zero) mat[!is.finite(mat)] <- 0
+  keep <- apply(mat, 2, function(z) stats::var(z, na.rm = TRUE) > 0)
+  mat <- mat[, keep, drop = FALSE]
+  if (scale_features && ncol(mat) > 0) {
+    mat <- scale(mat)
+    mat[!is.finite(mat)] <- 0
+  }
+  mat
+}
+
+build_asd_mae <- function(
+  omics,
+  symptoms,
+  contrast = c("T1", "T2"),
+  symptom = "abc",
+  views = names(omics),
+  fill_zero = TRUE,
+  scale_features = TRUE
+) {
+  contrast <- match.arg(contrast)
+  keep_times <- c("T0", contrast)
+
+  sym <- as.data.frame(symptoms, check.names = FALSE, stringsAsFactors = FALSE)
+  sym$time_norm <- normalize_symptom_time(sym$Timepoint)
+  sym <- sym[sym$Symptom == symptom & sym$time_norm %in% keep_times, , drop = FALSE]
+  sym$primary <- make_primary_id(sym$ID, sym$time_norm)
+  sym$X <- as.integer(sym$time_norm == contrast)
+  sym$Y <- suppressWarnings(as.numeric(as.character(sym$Score)))
+  sym <- sym[is.finite(sym$Y), c("primary", "ID", "time_norm", "X", "Y"), drop = FALSE]
+  rownames(sym) <- sym$primary
+
+  experiments <- list()
+  sample_map_rows <- list()
+
+  for (view in views) {
+    pcl <- omics[[view]]
+    meta <- as.data.frame(pcl$metadata, check.names = FALSE, stringsAsFactors = FALSE)
+    feat <- as.data.frame(pcl$features, check.names = FALSE, stringsAsFactors = FALSE)
+
+    meta$time_norm <- normalize_omics_time(meta$Time_point)
+    meta$primary <- make_primary_id(meta[["Subject ID"]], meta$time_norm)
+    rownames(feat) <- meta$primary
+
+    idx <- meta$time_norm %in% keep_times & meta$primary %in% sym$primary
+    if (!any(idx)) next
+
+    mat <- numeric_feature_matrix(
+      feat[idx, , drop = FALSE],
+      fill_zero = fill_zero,
+      scale_features = scale_features
+    )
+    if (nrow(mat) < 4 || ncol(mat) < 2) next
+
+    # SummarizedExperiment stores assays as features x samples.
+    experiments[[view]] <- SummarizedExperiment::SummarizedExperiment(
+      assays = list(abundance = t(mat))
+    )
+    sample_map_rows[[view]] <- data.frame(
+      assay = view,
+      primary = rownames(mat),
+      colname = rownames(mat),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  if (length(experiments) == 0) {
+    stop("No usable omics views were available for contrast=", contrast,
+         " and symptom=", symptom)
+  }
+
+  primary_ids <- Reduce(union, lapply(sample_map_rows, `[[`, "primary"))
+  pheno <- sym[intersect(rownames(sym), primary_ids), , drop = FALSE]
+  sample_map <- do.call(rbind, sample_map_rows)
+  sample_map <- sample_map[sample_map$primary %in% rownames(pheno), , drop = FALSE]
+  sample_map <- S4Vectors::DataFrame(
+    assay = sample_map$assay,
+    primary = sample_map$primary,
+    colname = sample_map$colname
+  )
+
+  MultiAssayExperiment::MultiAssayExperiment(
+    experiments = experiments,
+    colData = S4Vectors::DataFrame(
+      X = pheno$X,
+      Y = pheno$Y,
+      subject_id = pheno$ID,
+      timepoint = pheno$time_norm,
+      row.names = rownames(pheno)
+    ),
+    sampleMap = sample_map
+  )
+}
+
+mae_t1_abc <- build_asd_mae(
+  omics = omics,
+  symptoms = symptoms,
+  contrast = "T1",
+  symptom = "ABC"
+)
+mae_t1_abc
+```
+
+# Run Zentangler
+
+Zentangler fits all selected views in one multiview model. For quick iteration,
+start with the fast lasso preset and a modest SIS screen. Increase `sis_n`, use
+`method_preset = "full_exploratory"`, or add bootstrap repeats for a larger
+analysis.
+
+The ASD example is a time-point contrast, so the call below uses
+`study_design = "time"` instead of passing `x_var = "X"` directly. Zentangler
+encodes `timepoint == "T0"` as 0 and `timepoint == "T1"` as 1 internally. The
+explicit `X` column is still kept in the MAE because the HIMA2 comparator helper
+below uses it directly.
+
+```{r}
+zt_fit <- fit_multiview_parallel_zentangler(
+  mae_t1_abc,
+  y_var = "Y",
+  study_design = "time",
+  time_var = "timepoint",
+  time_ref = "T0",
+  time_compare = "T1",
+  covariates = NULL,
+  glmnet_alpha = 0.5,
+  sis_n = 50,
+  sis_rank = "abs_a",
+  screen_method = "sis",
+  fusion_mode = "late",
+  y_family = "gaussian",
+  fdr_method = "BH",
+  fdr_scope = "global",
+  fill_nonfinite_zero = TRUE,
+  seed = 1
+)
+
+zentangler_model_summary(zt_fit)
+zentangler_view_summary(zt_fit, q_threshold = 0.25)
+zentangler_top_mediators(zt_fit, n = 20)
+zentangler_active_mediators(zt_fit, q_threshold = 0.25)
+```
+
+Save the main outputs:
+
+```{r}
+out_dir <- file.path("tutorial_results", "zentangler_t1_abc")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+write.csv(zentangler_all_mediators(zt_fit),
+          file.path(out_dir, "zentangler_all_mediators.csv"),
+          row.names = FALSE)
+write.csv(zentangler_active_mediators(zt_fit, q_threshold = 0.25),
+          file.path(out_dir, "zentangler_active_mediators_q0p25.csv"),
+          row.names = FALSE)
+write.csv(zentangler_view_summary(zt_fit, q_threshold = 0.25),
+          file.path(out_dir, "zentangler_view_summary_q0p25.csv"),
+          row.names = FALSE)
+saveRDS(zt_fit, file.path(out_dir, "zentangler_fit.rds"))
+```
+
+# Run HIMA2 One View At A Time
+
+HIMA2 is a single-view method, so the comparator loops over the experiments in
+the MAE and runs one model per modality. The helper below adapts to the two main
+HIMA2 calling styles seen across HIMA versions.
+
+```{r}
+mae_block <- function(mae, view) {
+  extract_block <- getFromNamespace("zentangler_mae_extract_block", "Zentangler")
+  extract_block(
+    mae,
+    experiment_name = view,
+    fill_nonfinite_zero = TRUE
+  )
+}
+
+run_hima2_one_view <- function(M, pheno, penalty = "DBlasso") {
+  fun <- get("hima2", envir = asNamespace("HIMA"))
+  argn <- names(formals(fun))
+  data_M <- as.data.frame(M, check.names = FALSE)
+
+  if ("formula" %in% argn) {
+    call_args <- list(formula = Y ~ X)
+    if ("data.pheno" %in% argn) call_args$data.pheno <- pheno
+    if ("data.M" %in% argn) call_args$data.M <- data_M
+    if ("mediator.type" %in% argn) call_args$mediator.type <- "gaussian"
+    if ("mediator.family" %in% argn) call_args$mediator.family <- "gaussian"
+    if ("outcome.family" %in% argn) call_args$outcome.family <- "gaussian"
+    if ("penalty" %in% argn) call_args$penalty <- penalty
+    if ("scale" %in% argn) call_args$scale <- FALSE
+    if ("verbose" %in% argn) call_args$verbose <- FALSE
+    if ("topN" %in% argn) call_args$topN <- ncol(data_M)
+    if ("sigcut" %in% argn) call_args$sigcut <- 1
+    if ("Sigcut" %in% argn) call_args$Sigcut <- 1
+    return(do.call(fun, call_args))
+  }
+
+  call_args <- list(X = pheno$X, Y = pheno$Y, M = as.matrix(M))
+  if ("penalty" %in% argn) call_args$penalty <- penalty
+  if ("topN" %in% argn) call_args$topN <- ncol(M)
+  if ("sigcut" %in% argn) call_args$sigcut <- 1
+  if ("Sigcut" %in% argn) call_args$Sigcut <- 1
+  do.call(fun, call_args)
+}
+
+standardize_hima2_table <- function(fit, view, rep = NA_integer_) {
+  tab <- tryCatch({
+    if (inherits(fit, "hima") && is.list(fit)) {
+      lens <- vapply(fit, length, integer(1))
+      keep <- names(fit)[lens == max(lens) & lens > 0]
+      as.data.frame(fit[keep], check.names = FALSE, stringsAsFactors = FALSE)
+    } else {
+      as.data.frame(fit, check.names = FALSE)
+    }
+  }, error = function(e) data.frame())
+  if (nrow(tab) == 0) return(tab)
+
+  if ("ID" %in% names(tab)) {
+    tab$mediator <- as.character(tab$ID)
+  } else {
+    tab$mediator <- rownames(tab)
+  }
+  rownames(tab) <- NULL
+  names(tab) <- make.names(names(tab), unique = TRUE)
+
+  p_col <- intersect(c("p.value", "p.value.", "p", "P.value", "raw.p", "raw_p"), names(tab))
+  q_col <- intersect(c("BH.FDR", "BH_FDR", "q.value", "qvalue", "FDR"), names(tab))
+  a_col <- intersect(c("alpha", "a", "alpha_hat"), names(tab))
+  b_col <- intersect(c("beta", "b", "beta_hat"), names(tab))
+  ab_col <- intersect(c("alpha.beta", "alpha.beta.", "alpha.beta.."), names(tab))
+
+  tab$p_primary <- if (length(p_col) > 0) as.numeric(tab[[p_col[[1]]]]) else NA_real_
+  tab$q_hima_reported <- if (length(q_col) > 0) as.numeric(tab[[q_col[[1]]]]) else NA_real_
+  tab$a <- if (length(a_col) > 0) as.numeric(tab[[a_col[[1]]]]) else NA_real_
+  tab$b <- if (length(b_col) > 0) as.numeric(tab[[b_col[[1]]]]) else NA_real_
+  tab$score <- if (length(ab_col) > 0) as.numeric(tab[[ab_col[[1]]]]) else tab$a * tab$b
+  tab$abs_score <- abs(tab$score)
+  tab$rep <- rep
+  tab$method <- "hima2"
+  tab$view <- view
+  tab$omics <- view
+  tab
+}
+
+run_hima2_mae <- function(mae,
+                          x_var = "X",
+                          y_var = "Y",
+                          rep = NA_integer_,
+                          penalty = "DBlasso") {
+  pheno <- as.data.frame(SummarizedExperiment::colData(mae))
+  if (!(x_var %in% colnames(pheno))) stop("x_var not found in MAE colData: ", x_var)
+  if (!(y_var %in% colnames(pheno))) stop("y_var not found in MAE colData: ", y_var)
+  pheno$X <- suppressWarnings(as.numeric(as.character(pheno[[x_var]])))
+  pheno$Y <- suppressWarnings(as.numeric(as.character(pheno[[y_var]])))
+  pheno <- pheno[is.finite(pheno$X) & is.finite(pheno$Y), , drop = FALSE]
+
+  results <- list()
+  for (view in names(MultiAssayExperiment::experiments(mae))) {
+    M <- mae_block(mae, view)
+    common <- intersect(rownames(pheno), rownames(M))
+    M <- M[common, , drop = FALSE]
+    pheno_view <- pheno[common, , drop = FALSE]
+    if (length(unique(pheno_view$X)) < 2 || nrow(pheno_view) < 8 || ncol(M) < 2) {
+      next
+    }
+
+    fit <- run_hima2_one_view(M, pheno_view, penalty = penalty)
+    results[[view]] <- standardize_hima2_table(fit, view, rep = rep)
+  }
+
+  out <- if (length(results) > 0) do.call(rbind, results) else data.frame()
+  if (nrow(out) > 0 && "p_primary" %in% names(out)) {
+    out$p_primary <- as.numeric(unlist(out$p_primary, use.names = FALSE))
+    out$q_primary_global <- p.adjust(out$p_primary, method = "BH")
+    out$q_primary <- out$q_primary_global
+    out$q_primary_within_view <- ave(
+      out$p_primary,
+      out$view,
+      FUN = function(p) p.adjust(p, method = "BH")
+    )
+  }
+  rownames(out) <- NULL
+  out
+}
+
+hima2_tab <- run_hima2_mae(mae_t1_abc)
+hima2_sig <- hima2_tab[
+  is.finite(as.numeric(hima2_tab$q_primary_global)) &
+    as.numeric(hima2_tab$q_primary_global) < 0.25,
+  ,
+  drop = FALSE
+]
+
+hima2_sig <- hima2_sig[
+  order(as.numeric(hima2_sig$q_primary_global)),
+  ,
+  drop = FALSE
+]
+
+head(hima2_sig, 20)
+```
+
+Save HIMA2 outputs:
+
+```{r}
+out_dir <- file.path("tutorial_results", "hima2_t1_abc")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+write.csv(hima2_tab,
+          file.path(out_dir, "hima2_all_mediators.csv"),
+          row.names = FALSE)
+write.csv(subset(hima2_tab, q_primary_global <= 0.25),
+          file.path(out_dir, "hima2_active_mediators_q0p25.csv"),
+          row.names = FALSE)
+```
+
+# Run Multiple Symptoms And Contrasts
+
+The same helper can run over symptoms and treatment contrasts. Fecal and plasma
+metabolite views have baseline and T1 samples. Species and KOs also include T2
+samples in these example objects.
+
+```{r}
+symptom_names <- sort(unique(symptoms$Symptom))
+contrasts <- c("T1", "T2")
+
+all_zentangler <- list()
+all_hima2 <- list()
+all_errors <- character(0)
+
+for (contrast in contrasts) {
+  for (symptom in symptom_names) {
+    key <- paste(contrast, symptom, sep = "__")
+
+    mae <- tryCatch(
+      build_asd_mae(omics, symptoms, contrast = contrast, symptom = symptom),
+      error = function(e) {
+        all_errors <<- c(all_errors, paste0(key, ": MAE build failed: ", conditionMessage(e)))
+        NULL
+      }
+    )
+    if (is.null(mae)) next
+
+    pheno <- as.data.frame(SummarizedExperiment::colData(mae))
+    if (length(unique(pheno$X[is.finite(pheno$X)])) < 2) {
+      all_errors <- c(all_errors, paste0(key, ": skipped because X has fewer than two levels."))
+      next
+    }
+
+    zt <- tryCatch(
+      fit_multiview_parallel_zentangler(
+        mae,
+        y_var = "Y",
+        study_design = "time",
+        time_var = "timepoint",
+        time_ref = "T0",
+        time_compare = contrast,
+        covariates = NULL,
+        glmnet_alpha = 0.5,
+        sis_n = 50,
+        sis_rank = "abs_a",
+        screen_method = "sis",
+        fusion_mode = "late",
+        y_family = "gaussian",
+        fdr_method = "BH",
+        fdr_scope = "global",
+        effect_x0 = 0,
+        effect_x1 = 1,
+        fill_nonfinite_zero = TRUE,
+        seed = 1
+      ),
+      error = function(e) {
+        all_errors <<- c(all_errors, paste0(key, ": Zentangler failed: ", conditionMessage(e)))
+        NULL
+      }
+    )
+
+    if (!is.null(zt)) {
+      zt_tab <- zentangler_all_mediators(zt)
+      zt_tab$contrast <- contrast
+      zt_tab$symptom <- symptom
+      all_zentangler[[key]] <- zt_tab
+    }
+
+    h2_tab <- tryCatch(run_hima2_mae(mae), error = function(e) data.frame())
+    if (nrow(h2_tab) > 0) {
+      h2_tab$contrast <- contrast
+      h2_tab$symptom <- symptom
+      all_hima2[[key]] <- h2_tab
+    }
+  }
+}
+
+zentangler_all <- if (length(all_zentangler)) do.call(rbind, all_zentangler) else data.frame()
+hima2_all <- if (length(all_hima2)) do.call(rbind, all_hima2) else data.frame()
+
+all_errors
+```
+
+# Zentangler Simulations
+
+Zentangler also includes SIMMBA/InterSIM-style simulation helpers. This is useful
+for checking that a method recovers known mediators before running the real ASD
+analysis.
+
+```{r, fig.width=8, fig.align='center', fig.height=6}
+set.seed(1)
+
+sim <- gen_simmba(
+  nsample = 500,
+  nrep =5,
+  snr = 1,
+  n.pathways = 30,
+  TIE = rep(1, 3),
+  outcome.type = "continuous",
+  ygen.mode = "LM",
+  seed = 1
+)
+
+zentangler_sim_recovery <- list()
+hima2_sim_recovery <- list()
+zentangler_sim_summaries <- list()
+hima2_sim_results <- list()
+
+for (rep_i in seq_along(sim$trainMae)) {
+  sim_mae <- sim$trainMae[[rep_i]]
+  truth <- sim$truthDat[[rep_i]]
+  truth_key <- zentangler_truth_key(truth)
+
+  sim_fit <- fit_multiview_parallel_zentangler(
+    sim_mae,
+    x_var = "A",
+    y_var = "Y",
+    covariates = NULL,
+    glmnet_alpha = 0.5,
+    sis_n = 50,
+    sis_rank = "abs_a",
+    screen_method = "sis",
+    fusion_mode = "late",
+    y_family = "gaussian",
+    fdr_method = "BH",
+    fdr_scope = "global",
+    effect_x0 = 0,
+    effect_x1 = 1,
+    fill_nonfinite_zero = TRUE,
+    seed = rep_i
+  )
+
+  zentangler_tab <- zentangler_all_mediators(sim_fit)
+  zentangler_sim_summaries[[rep_i]] <- summarize_zentangler(
+    sim_fit,
+    q_threshold = seq(0.05, 0.25, by = 0.05)
+  )
+  zentangler_sim_recovery[[rep_i]] <- zentangler_score_truth_recovery(
+    zentangler_tab,
+    truth_key = truth_key,
+    rep = rep_i,
+    fusion_mode = "late",
+    q_threshold = 0.25,
+    q_col = "q_primary",
+    fdr_scope = "global",
+    top_n = 50
+  )
+
+  hima2_tab <- run_hima2_mae(
+    sim_mae,
+    x_var = "A",
+    y_var = "Y",
+    rep = rep_i
+  )
+  hima2_sim_results[[rep_i]] <- hima2_tab
+  hima2_sim_recovery[[rep_i]] <- zentangler_score_truth_recovery(
+    hima2_tab,
+    truth_key = truth_key,
+    rep = rep_i,
+    fusion_mode = "singleview_hima2",
+    q_threshold = 0.25,
+    q_col = "q_primary",
+    fdr_scope = "global",
+    top_n = 50
+  )
+}
+
+zentangler_recovery <- do.call(rbind, zentangler_sim_recovery)
+hima2_recovery <- do.call(rbind, hima2_sim_recovery)
+
+zentangler_recovery
+hima2_recovery
+
+sim_recovery_plot <- rbind(
+  transform(zentangler_recovery, method = "Zentangler"),
+  transform(hima2_recovery, method = "HIMA2")
+)
+
+plot_metric_by_method <- function(df, metric, ylab = metric) {
+  boxplot(
+    stats::as.formula(paste(metric, "~ method")),
+    data = df,
+    ylab = ylab,
+    xlab = "",
+    col = c("#4C78A8", "#F58518"),
+    border = "#333333"
+  )
+  stripchart(
+    stats::as.formula(paste(metric, "~ method")),
+    data = df,
+    vertical = TRUE,
+    method = "jitter",
+    pch = 16,
+    col = "#00000066",
+    add = TRUE
+  )
+}
+
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+plot_metric_by_method(sim_recovery_plot, "recall", "Recall at q <= 0.25")
+plot_metric_by_method(sim_recovery_plot, "precision", "Precision at q <= 0.25")
+plot_metric_by_method(sim_recovery_plot, "fdr", "Observed FDR at q <= 0.25")
+plot_metric_by_method(sim_recovery_plot, "top50_precision", "Top-50 precision")
+par(op)
+
+plot(
+  zentangler_recovery$rep,
+  zentangler_recovery$n_active,
+  type = "b",
+  pch = 16,
+  col = "#4C78A8",
+  ylim = range(c(zentangler_recovery$n_active, hima2_recovery$n_active), na.rm = TRUE),
+  xlab = "Simulation replicate",
+  ylab = "Active mediators at q <= 0.25"
+)
+lines(hima2_recovery$rep, hima2_recovery$n_active, type = "b", pch = 16, col = "#F58518")
+legend(
+  "topright",
+  legend = c("Zentangler", "HIMA2"),
+  col = c("#4C78A8", "#F58518"),
+  pch = 16,
+  lty = 1,
+  bty = "n"
+)
+
+```

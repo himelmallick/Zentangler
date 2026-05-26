@@ -44,6 +44,142 @@ validate_primary_inference <- function(primary_inference) {
   match.arg(primary_inference, choices = c("model_based", "bootstrap_score"))
 }
 
+validate_study_design <- function(study_design) {
+  match.arg(study_design, choices = c("standard", "case_control", "time", "case_control_time"))
+}
+
+validate_exposure_role <- function(exposure_role) {
+  match.arg(exposure_role, choices = c("time", "case", "interaction"))
+}
+
+zentangler_nonmissing_unique <- function(x) {
+  out <- unique(as.character(x[!is.na(x) & nzchar(as.character(x))]))
+  sort(out)
+}
+
+zentangler_binary_indicator <- function(x, ref = NULL, compare = NULL, var_label = "variable") {
+  vals <- zentangler_nonmissing_unique(x)
+  if (is.null(ref) || is.null(compare)) {
+    if (length(vals) != 2L) {
+      stop(
+        var_label, " must have exactly two non-missing levels when ref/compare are not supplied. ",
+        "Observed levels: ", paste(vals, collapse = ", "),
+        call. = FALSE
+      )
+    }
+    if (is.null(ref)) ref <- vals[[1L]]
+    if (is.null(compare)) compare <- vals[[2L]]
+  }
+  ref <- as.character(ref)
+  compare <- as.character(compare)
+  if (identical(ref, compare)) stop(var_label, " ref and compare levels must be different.", call. = FALSE)
+
+  z <- as.character(x)
+  out <- rep(NA_real_, length(z))
+  out[z == ref] <- 0
+  out[z == compare] <- 1
+  out
+}
+
+prepare_zentangler_study_design <- function(
+  pheno_df,
+  x_var = NULL,
+  covariates = NULL,
+  study_design = c("standard", "case_control", "time", "case_control_time"),
+  case_var = NULL,
+  case_level = NULL,
+  control_level = NULL,
+  time_var = NULL,
+  time_ref = NULL,
+  time_compare = NULL,
+  exposure_role = c("time", "case", "interaction"),
+  add_design_covariates = TRUE,
+  effect_x0 = NULL,
+  effect_x1 = NULL
+) {
+  study_design <- validate_study_design(study_design)
+  exposure_role <- validate_exposure_role(exposure_role)
+  covariates <- unique(covariates)
+  design_info <- list(study_design = study_design)
+
+  if (identical(study_design, "standard")) {
+    if (is.null(x_var) || length(x_var) != 1L || !nzchar(as.character(x_var))) {
+      stop("x_var is required when study_design = 'standard'.", call. = FALSE)
+    }
+    return(list(
+      pheno_df = pheno_df,
+      x_var = as.character(x_var),
+      covariates = covariates,
+      effect_x0 = effect_x0,
+      effect_x1 = effect_x1,
+      design_info = design_info
+    ))
+  }
+
+  if (identical(study_design, "case_control") || identical(study_design, "case_control_time")) {
+    if (is.null(case_var) || !(case_var %in% colnames(pheno_df))) {
+      stop("case_var must name a column in phenotype data for study_design = '", study_design, "'.", call. = FALSE)
+    }
+    pheno_df$.zentangler_case <- zentangler_binary_indicator(
+      pheno_df[[case_var]],
+      ref = control_level,
+      compare = case_level,
+      var_label = case_var
+    )
+    design_info$case_var <- case_var
+    design_info$case_level <- case_level %||% zentangler_nonmissing_unique(pheno_df[[case_var]])[[2L]]
+    design_info$control_level <- control_level %||% zentangler_nonmissing_unique(pheno_df[[case_var]])[[1L]]
+  }
+
+  if (identical(study_design, "time") || identical(study_design, "case_control_time")) {
+    if (is.null(time_var) || !(time_var %in% colnames(pheno_df))) {
+      stop("time_var must name a column in phenotype data for study_design = '", study_design, "'.", call. = FALSE)
+    }
+    pheno_df$.zentangler_time <- zentangler_binary_indicator(
+      pheno_df[[time_var]],
+      ref = time_ref,
+      compare = time_compare,
+      var_label = time_var
+    )
+    design_info$time_var <- time_var
+    design_info$time_ref <- time_ref %||% zentangler_nonmissing_unique(pheno_df[[time_var]])[[1L]]
+    design_info$time_compare <- time_compare %||% zentangler_nonmissing_unique(pheno_df[[time_var]])[[2L]]
+  }
+
+  if (identical(study_design, "case_control")) {
+    x_var <- ".zentangler_case"
+  } else if (identical(study_design, "time")) {
+    x_var <- ".zentangler_time"
+  } else {
+    design_info$exposure_role <- exposure_role
+    if (identical(exposure_role, "time")) {
+      x_var <- ".zentangler_time"
+      if (isTRUE(add_design_covariates)) covariates <- unique(c(covariates, ".zentangler_case"))
+    } else if (identical(exposure_role, "case")) {
+      x_var <- ".zentangler_case"
+      if (isTRUE(add_design_covariates)) covariates <- unique(c(covariates, ".zentangler_time"))
+    } else {
+      pheno_df$.zentangler_case_time <- pheno_df$.zentangler_case * pheno_df$.zentangler_time
+      x_var <- ".zentangler_case_time"
+      if (isTRUE(add_design_covariates)) covariates <- unique(c(covariates, ".zentangler_case", ".zentangler_time"))
+    }
+  }
+
+  if (is.null(effect_x0)) effect_x0 <- 0
+  if (is.null(effect_x1)) effect_x1 <- 1
+  design_info$derived_x_var <- x_var
+  design_info$add_design_covariates <- isTRUE(add_design_covariates)
+
+  list(
+    pheno_df = pheno_df,
+    x_var = x_var,
+    covariates = covariates,
+    effect_x0 = effect_x0,
+    effect_x1 = effect_x1,
+    design_info = design_info
+  )
+}
+
 apply_primary_fdr_scope <- function(tab, fdr_method = c("BH", "BY"), fdr_scope = c("global", "within_view")) {
   fdr_method <- validate_fdr_method(fdr_method)
   fdr_scope <- validate_fdr_scope(fdr_scope)
@@ -201,4 +337,3 @@ prefix_multiview_blocks <- function(blocks) {
 
   list(X = do.call(cbind, mats), map = do.call(rbind, map))
 }
-

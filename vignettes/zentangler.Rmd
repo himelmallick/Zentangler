@@ -89,7 +89,8 @@ Zentangler expects:
 2. Each experiment represents one view.
 3. Features are numeric.
 4. Samples can be aligned to `colData(mae)`.
-5. `colData(mae)` contains the exposure variable `x_var`.
+5. `colData(mae)` contains either a numeric exposure variable `x_var`, or the
+   case/time columns needed by `study_design`.
 6. `colData(mae)` contains the outcome variable `y_var`.
 7. Optional covariates are also stored in `colData(mae)`.
 
@@ -115,6 +116,8 @@ sample_ids <- paste0("sample_", seq_len(n))
 pheno <- DataFrame(
   X = rbinom(n, 1, 0.5),
   Y = rnorm(n),
+  group = sample(c("control", "case"), n, replace = TRUE),
+  visit = sample(c("T0", "T1"), n, replace = TRUE),
   age = rnorm(n, mean = 50, sd = 10),
   subject_id = sample(paste0("subject_", 1:40), n, replace = TRUE),
   row.names = sample_ids
@@ -161,6 +164,66 @@ You can inspect available presets with:
 
 ```{r}
 zentangler_method_presets()
+```
+
+# Study Design Helpers
+
+The default `study_design = "standard"` uses `x_var` directly. This remains the
+right interface when the exposure is already numeric.
+
+```{r}
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y"
+)
+```
+
+For case-control data, Zentangler can create the 0/1 exposure internally:
+
+```{r}
+fit_case <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "case_control",
+  case_var = "group",
+  control_level = "control",
+  case_level = "case"
+)
+```
+
+For a time-only analysis, choose one reference and one comparison time point:
+
+```{r}
+fit_time <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "time",
+  time_var = "visit",
+  time_ref = "T0",
+  time_compare = "T1"
+)
+```
+
+For data with both case/control status and time points, use
+`study_design = "case_control_time"`. The `exposure_role` controls whether the
+exposure is the time contrast, the case-control contrast, or the case-by-time
+interaction. With `add_design_covariates = TRUE`, Zentangler adjusts for the
+remaining design terms.
+
+```{r}
+fit_case_time <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "case_control_time",
+  case_var = "group",
+  control_level = "control",
+  case_level = "case",
+  time_var = "visit",
+  time_ref = "T0",
+  time_compare = "T1",
+  exposure_role = "interaction"
+)
 ```
 
 Current presets include:
@@ -381,6 +444,22 @@ The refit option uses the selected active set and computes ordinary refit-based
 p-values. This is simpler to explain, but can be less stable if the selected
 active set is too large relative to sample size.
 
+Bootstrap refits can also be used for B-path inference:
+
+```{r}
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y",
+  b_inference = "bootstrap",
+  bootstrap_repeats = 100
+)
+```
+
+With this option, `p_b` is replaced by the bootstrap B-path p-value before
+`p_primary` and the final q-values are recomputed. The table also retains
+`p_b_model_based`, `p_b_bootstrap`, and B-path bootstrap interval columns.
+
 # Stage 5: Combining mediator evidence
 
 For each mediator, Zentangler reports:
@@ -468,7 +547,7 @@ without changing the A-stage or B-stage model.
 # Optional bootstrap uncertainty
 
 Zentangler can run bootstrap resampling to add uncertainty summaries for mediator
-scores and effect summaries.
+scores, B-path coefficients, and effect summaries.
 
 ```{r}
 fit <- fit_multiview_parallel_zentangler(

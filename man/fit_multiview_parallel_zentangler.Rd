@@ -4,10 +4,19 @@
 \usage{
 fit_multiview_parallel_zentangler(
   mae,
-  x_var,
-  y_var,
+  x_var = NULL,
+  y_var = NULL,
   view_names = NULL,
   assay_names = NULL,
+  study_design = c("standard", "case_control", "time", "case_control_time"),
+  case_var = NULL,
+  case_level = NULL,
+  control_level = NULL,
+  time_var = NULL,
+  time_ref = NULL,
+  time_compare = NULL,
+  exposure_role = c("time", "case", "interaction"),
+  add_design_covariates = TRUE,
   method_preset = c("custom", "fast_lasso", "elastic_net", "longitudinal_maaslin2",
     "full_exploratory"),
   covariates = NULL,
@@ -29,7 +38,7 @@ fit_multiview_parallel_zentangler(
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
   primary_inference = c("model_based", "bootstrap_score"),
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -48,10 +57,19 @@ fit_multiview_parallel_zentangler(
 }
 \arguments{
 \item{mae}{A \code{MultiAssayExperiment}. Each experiment is treated as one omics view.}
-\item{x_var}{Name of the exposure column in \code{colData(mae)}. Must be numeric.}
+\item{x_var}{Name of the exposure column in \code{colData(mae)}. Must be numeric when \code{study_design = "standard"}. For other study designs, Zentangler creates an internal numeric exposure from the design variables.}
 \item{y_var}{Name of the outcome column in \code{colData(mae)}. Must be numeric.}
 \item{view_names}{Optional character vector of MAE experiment names to use. Defaults to all experiments.}
 \item{assay_names}{Optional named character vector of assay names, one per view. Defaults to the first assay in each experiment.}
+\item{study_design}{Study design helper. \code{"standard"} uses \code{x_var} directly. \code{"case_control"} creates a 0/1 exposure from \code{case_var}. \code{"time"} creates a 0/1 exposure from \code{time_var}. \code{"case_control_time"} creates case and time indicators and uses \code{exposure_role} to choose the exposure.}
+\item{case_var}{Case/control column in \code{colData(mae)} for case-control designs.}
+\item{case_level}{Level of \code{case_var} coded as 1. If \code{NULL}, the second sorted non-missing level is used.}
+\item{control_level}{Level of \code{case_var} coded as 0. If \code{NULL}, the first sorted non-missing level is used.}
+\item{time_var}{Time-point column in \code{colData(mae)} for time designs.}
+\item{time_ref}{Reference time level coded as 0. If \code{NULL}, the first sorted non-missing level is used.}
+\item{time_compare}{Comparison time level coded as 1. If \code{NULL}, the second sorted non-missing level is used.}
+\item{exposure_role}{For \code{study_design = "case_control_time"}, choose whether the exposure is the time contrast, the case-control contrast, or the case-by-time interaction.}
+\item{add_design_covariates}{Logical. For \code{study_design = "case_control_time"}, add the complementary design indicators as covariates. Time exposure adjusts for case/control, case exposure adjusts for time, and interaction exposure adjusts for both main effects.}
 \item{method_preset}{Optional named preset. \code{"custom"} preserves individual arguments. Other presets set coherent defaults for common workflows. See \code{zentangler_method_presets()}.}
 \item{covariates}{Optional covariate column names in \code{colData(mae)}.}
 \item{residualize}{Logical. If \code{TRUE}, residualize exposure, outcome, and mediators against covariates before fitting.}
@@ -72,7 +90,7 @@ fit_multiview_parallel_zentangler(
 \item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
 \item{fdr_scope}{Final FDR scope. Use \code{"global"} to compute \code{q_primary} across all mediators from all views, or \code{"within_view"} to compute \code{q_primary} separately inside each view. Both \code{q_primary_global} and \code{q_primary_within_view} are retained in the output table.}
 \item{primary_inference}{Primary mediator p-value engine. Use \code{"model_based"} to set \code{p_primary} from joint A/B evidence, or \code{"bootstrap_score"} to set \code{p_primary} from bootstrap p-values for the mediation score. Bootstrap-score inference requires \code{bootstrap_repeats > 0}.}
-\item{b_inference}{B-path inference method. \code{"debiased_lasso"} uses Gaussian de-biased lasso for Gaussian outcomes and de-biased logistic lasso for binomial outcomes. \code{"debiased_logistic_lasso"} explicitly requests the binomial de-biased logistic lasso path. \code{"refit"} uses active-set refitting.}
+\item{b_inference}{B-path inference method. \code{"debiased_lasso"} uses Gaussian de-biased lasso for Gaussian outcomes and de-biased logistic lasso for binomial outcomes. \code{"debiased_logistic_lasso"} explicitly requests the binomial de-biased logistic lasso path. \code{"refit"} uses active-set refitting. \code{"bootstrap"} uses bootstrap refits for B-path p-values and requires \code{bootstrap_repeats > 0}.}
 \item{debias_max_targets}{Maximum number of active B-path targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}
 \item{coop_maxit}{Maximum cooperative fusion iterations.}
@@ -113,5 +131,36 @@ fit <- fit_multiview_parallel_zentangler(
   bootstrap_repeats = 100
 )
 head(fit$combined_mediators)
+
+fit_case <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "case_control",
+  case_var = "group",
+  control_level = "control",
+  case_level = "case"
+)
+
+fit_time <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "time",
+  time_var = "visit",
+  time_ref = "T0",
+  time_compare = "T1"
+)
+
+fit_case_time <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "case_control_time",
+  case_var = "group",
+  control_level = "control",
+  case_level = "case",
+  time_var = "visit",
+  time_ref = "T0",
+  time_compare = "T1",
+  exposure_role = "interaction"
+)
 }
 }

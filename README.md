@@ -44,7 +44,9 @@ fit <- fit_multiview_parallel_zentangler(
 zentangler_top_mediators(fit, n = 10)
 ```
 
-`x_var` and `y_var` must be columns in `colData(mae)`.
+For the default `study_design = "standard"`, `x_var` and `y_var` must be
+numeric columns in `colData(mae)`. Zentangler can also create the numeric
+exposure for common study designs with `study_design`.
 
 ## Input Structure
 
@@ -52,7 +54,9 @@ Zentangler expects a `MultiAssayExperiment` with:
 
 - experiments containing numeric assay features
 - samples represented in MAE sample identifiers
-- exposure, outcome, and optional covariates in `colData(mae)`
+- outcome and optional covariates in `colData(mae)`
+- either a numeric exposure column for the standard API, or case/time columns
+  that can be encoded by `study_design`
 
 For `SummarizedExperiment` assays, the standard Bioconductor orientation is used:
 
@@ -67,6 +71,65 @@ samples x features
 ```
 
 for model fitting.
+
+## Study Design Helpers
+
+The standard API uses a numeric exposure directly:
+
+```r
+fit <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y"
+)
+```
+
+For case-control data, provide the case/control column and levels. Zentangler
+creates an internal 0/1 exposure where control is 0 and case is 1:
+
+```r
+fit_case <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "case_control",
+  case_var = "group",
+  control_level = "control",
+  case_level = "case"
+)
+```
+
+For time-point contrasts, provide the time column and the reference/comparison
+levels. Zentangler creates an internal 0/1 exposure for that contrast:
+
+```r
+fit_time <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "time",
+  time_var = "visit",
+  time_ref = "T0",
+  time_compare = "T1"
+)
+```
+
+For combined case-control and time designs, use `study_design =
+"case_control_time"` and choose the exposure with `exposure_role`. The default
+`add_design_covariates = TRUE` adjusts for the complementary design terms.
+
+```r
+fit_case_time <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  y_var = "Y",
+  study_design = "case_control_time",
+  case_var = "group",
+  control_level = "control",
+  case_level = "case",
+  time_var = "visit",
+  time_ref = "T0",
+  time_compare = "T1",
+  exposure_role = "interaction"
+)
+```
 
 ## Method Presets
 
@@ -239,6 +302,18 @@ b_inference = "refit"
 
 Refits an ordinary model on the selected active mediator set.
 
+### Bootstrap B-Path Inference
+
+```r
+b_inference = "bootstrap"
+bootstrap_repeats = 100
+```
+
+Uses bootstrap refits for the B-path p-values. The output keeps the initial
+model-based B p-value in `p_b_model_based`, reports bootstrap summaries such as
+`b_boot_low`, `b_boot_high`, and `p_b_bootstrap`, and uses the bootstrap B
+p-value as `p_b` before recomputing `p_primary` and the final q-values.
+
 ### Bootstrap Uncertainty
 
 ```r
@@ -252,6 +327,10 @@ Adds bootstrap summaries for mediator scores, including:
 - `score_boot_low`
 - `score_boot_high`
 - `score_boot_selection_freq`
+- `b_boot_mean`
+- `b_boot_sd`
+- `b_boot_low`
+- `b_boot_high`
 
 For repeated-measures or clustered data, use a subject or cluster column in `colData(mae)`:
 

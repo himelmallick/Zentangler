@@ -427,13 +427,25 @@ infer_p_b_multiview <- function(
   C = NULL,
   coef_by_view,
   y_family = c("gaussian", "binomial"),
-  method = c("debiased_lasso", "debiased_logistic_lasso", "refit"),
+  method = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   max_debias_targets = 200L
 ) {
   y_family <- match.arg(y_family)
   method <- match.arg(method)
   lambda_choice <- match.arg(lambda_choice)
+
+  if (identical(method, "bootstrap")) {
+    p_b <- infer_p_b_multiview_refit(
+      Y = Y,
+      X = X,
+      blocks = blocks,
+      C = C,
+      coef_by_view = coef_by_view,
+      y_family = y_family
+    )
+    return(list(p_b = p_b, method = "bootstrap_pending_active_set_refit_initial"))
+  }
 
   if (identical(method, "debiased_lasso") && identical(y_family, "gaussian")) {
     db_try <- try(
@@ -525,4 +537,3 @@ assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec, fdr_method = c("
   rownames(out) <- NULL
   out
 }
-
