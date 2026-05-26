@@ -19,7 +19,7 @@ run_intersim_zentangler(
   seed = 1234,
   p.train = 0.7,
   ygen.mode = c("LM", "Friedman", "Friedman2"),
-  outcome.type = c("continuous", "binary"),
+  outcome.type = c("continuous", "binary", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   maaslin2_random_effect = NULL,
@@ -28,7 +28,8 @@ run_intersim_zentangler(
   maaslin2_analysis_method = "LM",
   maaslin2_standardize = FALSE,
   maaslin2_output_dir = NULL,
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso",
+    "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   residualize = FALSE,
@@ -64,7 +65,7 @@ run_intersim_zentangler(
 \item{maaslin2_analysis_method}{MaAsLin2 analysis method.}
 \item{maaslin2_standardize}{Logical passed to MaAsLin2.}
 \item{maaslin2_output_dir}{Optional directory for MaAsLin2 A-stage outputs.}
-\item{b_inference}{B-path inference method. Use \code{"bootstrap"} with \code{bootstrap_repeats > 0} to estimate B-path p-values from bootstrap refits.}
+\item{b_inference}{B-path inference method. Use \code{"bootstrap"} with \code{bootstrap_repeats > 0} to estimate B-path p-values from bootstrap refits. Use \code{"debiased_cox_lasso"} for the Cox survival B-path approximation.}
 \item{debias_max_targets}{Maximum active targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}
 \item{residualize}{Logical. Residualize X, Y, and mediators against covariates.}

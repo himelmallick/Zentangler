@@ -21,15 +21,17 @@ glmnet_alpha_label <- function(glmnet_alpha) {
 choose_block_lambda <- function(Y, W, M, y_family, lambda_choice) {
   Z <- cbind(W, M)
   pf <- c(rep(0, ncol(W)), rep(1, ncol(M)))
+  intercept <- !identical(y_family, "survival")
+  glmnet_family <- if (identical(y_family, "survival")) "cox" else y_family
 
   cvfit <- glmnet::cv.glmnet(
     x = as.matrix(Z),
     y = Y,
-    family = y_family,
+    family = glmnet_family,
     alpha = 1,
     penalty.factor = pf,
     standardize = TRUE,
-    intercept = FALSE
+    intercept = intercept
   )
 
   lam <- as.numeric(cvfit[[lambda_choice]])
@@ -52,7 +54,7 @@ fit_block_lasso_for_late <- function(
   X,
   M,
   C = NULL,
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   prefix = "B::"
@@ -72,10 +74,11 @@ fit_block_lasso_for_late <- function(
   pf[colnames(Z) == "X"] <- 0
   if (!is.null(C) && ncol(C) > 0) pf[colnames(Z) %in% colnames(C)] <- 0
 
+  glmnet_family <- if (identical(y_family, "survival")) "cox" else y_family
   cvfit <- glmnet::cv.glmnet(
     x = as.matrix(Z),
     y = Y,
-    family = y_family,
+    family = glmnet_family,
     alpha = glmnet_alpha,
     penalty.factor = pf,
     standardize = TRUE
@@ -84,7 +87,8 @@ fit_block_lasso_for_late <- function(
   beta <- as.matrix(coef(cvfit, s = lambda_choice))[, 1]
   names(beta) <- gsub("`", "", names(beta), fixed = TRUE)
 
-  pred <- as.numeric(predict(cvfit, newx = as.matrix(Z), s = lambda_choice, type = "response"))
+  pred_type <- if (identical(y_family, "survival")) "link" else "response"
+  pred <- as.numeric(predict(cvfit, newx = as.matrix(Z), s = lambda_choice, type = pred_type))
 
   x_coef <- beta["X"]
   if (!is.finite(x_coef)) x_coef <- 0
@@ -102,7 +106,7 @@ fit_y_multiview_glmnet_lasso <- function(
   X,
   blocks,
   C = NULL,
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1
 ) {
@@ -119,10 +123,11 @@ fit_y_multiview_glmnet_lasso <- function(
   pf[colnames(Z) == "X"] <- 0
   if (!is.null(C) && ncol(C) > 0) pf[colnames(Z) %in% colnames(C)] <- 0
 
+  glmnet_family <- if (identical(y_family, "survival")) "cox" else y_family
   cvfit <- glmnet::cv.glmnet(
     x = as.matrix(Z),
     y = Y,
-    family = y_family,
+    family = glmnet_family,
     alpha = glmnet_alpha,
     penalty.factor = pf,
     standardize = TRUE
@@ -157,7 +162,7 @@ fit_y_multiview_cooperative_intermediate <- function(
   X,
   blocks,
   C = NULL,
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   rho = 0.2,
   maxit = 100,
@@ -166,7 +171,7 @@ fit_y_multiview_cooperative_intermediate <- function(
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
   if (!identical(y_family, "gaussian")) {
-    stop("K-view cooperative intermediate fusion currently supports y_family='gaussian'.")
+    stop("K-view cooperative intermediate fusion currently supports y_family='gaussian'. Use early or late fusion for survival outcomes.")
   }
   if (rho < 0) stop("rho must be non-negative.")
 
@@ -273,7 +278,7 @@ fit_y_multiview_late_fusion_lasso <- function(
   X,
   blocks,
   C = NULL,
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1
 ) {
@@ -297,12 +302,16 @@ fit_y_multiview_late_fusion_lasso <- function(
 
   meta_dat <- as.data.frame(lapply(block_fits, `[[`, "pred"), check.names = FALSE)
   colnames(meta_dat) <- paste0("pred_", names(blocks))
-  meta_dat$Y <- Y
-  meta_formula <- as.formula(paste("Y ~", paste(setdiff(colnames(meta_dat), "Y"), collapse = " + ")))
-
-  meta_fit <- if (identical(y_family, "gaussian")) {
+  pred_cols <- colnames(meta_dat)
+  if (identical(y_family, "survival")) {
+    meta_fit <- survival::coxph(Y ~ ., data = meta_dat)
+  } else if (identical(y_family, "gaussian")) {
+    meta_dat$Y <- Y
+    meta_formula <- as.formula(paste("Y ~", paste(pred_cols, collapse = " + ")))
     lm(meta_formula, data = meta_dat)
   } else {
+    meta_dat$Y <- Y
+    meta_formula <- as.formula(paste("Y ~", paste(pred_cols, collapse = " + ")))
     glm(meta_formula, data = meta_dat, family = binomial())
   }
 
@@ -332,7 +341,7 @@ fit_y_multiview_stage <- function(
   blocks,
   C = NULL,
   fusion_mode = c("early", "intermediate", "late"),
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   coop_rho = 0.2,
@@ -386,4 +395,3 @@ fit_y_multiview_stage <- function(
     glmnet_alpha = glmnet_alpha
   )
 }
-

@@ -17,7 +17,7 @@ infer_effect_contrast <- function(X, x0 = NULL, x1 = NULL) {
   c(x0 = x0, x1 = x1, delta = x1 - x0)
 }
 
-estimate_reduced_x_effect <- function(Y, X, C = NULL, y_family = c("gaussian", "binomial"), x0 = NULL, x1 = NULL) {
+estimate_reduced_x_effect <- function(Y, X, C = NULL, y_family = c("gaussian", "binomial", "survival"), x0 = NULL, x1 = NULL) {
   y_family <- match.arg(y_family)
   contrast <- infer_effect_contrast(X, x0 = x0, x1 = x1)
 
@@ -26,7 +26,10 @@ estimate_reduced_x_effect <- function(Y, X, C = NULL, y_family = c("gaussian", "
   W <- as.matrix(W)
 
   fit <- try(
-    if (identical(y_family, "gaussian")) {
+    if (identical(y_family, "survival")) {
+      dat <- as.data.frame(W[, -1, drop = FALSE], check.names = TRUE)
+      survival::coxph(Y ~ ., data = dat)
+    } else if (identical(y_family, "gaussian")) {
       lm.fit(x = W, y = as.numeric(Y))
     } else {
       suppressWarnings(glm.fit(x = W, y = as.numeric(Y), family = binomial(), intercept = FALSE))
@@ -37,6 +40,7 @@ estimate_reduced_x_effect <- function(Y, X, C = NULL, y_family = c("gaussian", "
 
   out <- as.numeric(fit$coefficients["X"])
   if (!is.finite(out)) return(NA_real_)
+  if (identical(y_family, "survival")) return(out * contrast[["delta"]])
   if (identical(y_family, "gaussian")) return(out * contrast[["delta"]])
 
   co <- fit$coefficients
@@ -95,7 +99,7 @@ make_active_mediator_matrix <- function(combined_mediators, blocks) {
   list(M = do.call(cbind, mats), map = map)
 }
 
-fit_active_outcome_effect_model <- function(Y, X, M_active, C = NULL, y_family = c("gaussian", "binomial")) {
+fit_active_outcome_effect_model <- function(Y, X, M_active, C = NULL, y_family = c("gaussian", "binomial", "survival")) {
   y_family <- match.arg(y_family)
   Z <- cbind(`(Intercept)` = 1, X = as.numeric(X))
   if (!is.null(C) && ncol(C) > 0) {
@@ -107,7 +111,10 @@ fit_active_outcome_effect_model <- function(Y, X, M_active, C = NULL, y_family =
   Z <- as.matrix(Z)
 
   fit <- try(
-    if (identical(y_family, "gaussian")) {
+    if (identical(y_family, "survival")) {
+      dat <- as.data.frame(Z[, -1, drop = FALSE], check.names = TRUE)
+      survival::coxph(Y ~ ., data = dat)
+    } else if (identical(y_family, "gaussian")) {
       stats::lm.fit(x = Z, y = as.numeric(Y))
     } else {
       suppressWarnings(stats::glm.fit(x = Z, y = as.numeric(Y), family = stats::binomial(), intercept = FALSE))
@@ -124,7 +131,7 @@ fit_active_outcome_effect_model <- function(Y, X, M_active, C = NULL, y_family =
   list(coefficients = co, design = Z)
 }
 
-predict_effect_mean <- function(co, Z_template, X_value, M_value = NULL, y_family = c("gaussian", "binomial")) {
+predict_effect_mean <- function(co, Z_template, X_value, M_value = NULL, y_family = c("gaussian", "binomial", "survival")) {
   y_family <- match.arg(y_family)
   Z <- Z_template
   Z[, "X"] <- as.numeric(X_value)
@@ -143,7 +150,7 @@ compute_effect_decomposition_multiview <- function(
   X,
   blocks,
   C = NULL,
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
   x0 = NULL,
   x1 = NULL
 ) {
@@ -156,6 +163,34 @@ compute_effect_decomposition_multiview <- function(
   active_info <- make_active_mediator_matrix(combined_mediators, blocks)
   M_obs <- active_info$M
   active_map <- active_info$map
+
+  if (identical(y_family, "survival")) {
+    direct_linear_product <- as.numeric(direct_effect) * delta_x
+    indirect_linear_product <- if (nrow(active_map) > 0) sum(active_map$a * active_map$b_original * delta_x, na.rm = TRUE) else 0
+    reduced_te <- estimate_reduced_x_effect(Y = Y, X = X, C = C, y_family = y_family, x0 = x0, x1 = x1)
+    return(data.frame(
+      effect_method = "cox_log_hazard_product_summary",
+      effect_scale = "log_hazard_ratio",
+      x0 = x0,
+      x1 = x1,
+      delta_x = delta_x,
+      nde = direct_linear_product,
+      nie_total = indirect_linear_product,
+      te = direct_linear_product + indirect_linear_product,
+      prop_mediated = if (is.finite(reduced_te) && abs(reduced_te) > 1e-08) indirect_linear_product / reduced_te else NA_real_,
+      reduced_total_effect = reduced_te,
+      decomposition_gap = NA_real_,
+      direct_effect = direct_linear_product,
+      indirect_total = indirect_linear_product,
+      total_decomp = direct_linear_product + indirect_linear_product,
+      direct_coefficient_active_model = as.numeric(direct_effect),
+      direct_effect_y_model_coefficient = as.numeric(direct_effect),
+      direct_effect_y_model_product = direct_linear_product,
+      indirect_product_sum = indirect_linear_product,
+      n_active_total = nrow(active_map),
+      stringsAsFactors = FALSE
+    ))
+  }
 
   effect_fit <- fit_active_outcome_effect_model(
     Y = Y,
@@ -231,4 +266,3 @@ compute_effect_decomposition_multiview <- function(
 
   out
 }
-

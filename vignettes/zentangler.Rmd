@@ -347,6 +347,30 @@ The mediator coefficient from this stage is the B-path estimate `b`.
 
 Zentangler currently supports three fusion modes.
 
+## Survival outcomes
+
+For time-to-event outcomes, use Cox survival models by setting
+`y_family = "survival"` and providing follow-up time and event columns.
+
+```{r}
+fit_surv <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  fusion_mode = "early",
+  b_inference = "bootstrap",
+  bootstrap_repeats = 100
+)
+```
+
+Survival outcomes currently support early and late fusion. The B-stage can use
+`b_inference = "refit"`, `b_inference = "bootstrap"`, or
+`b_inference = "debiased_cox_lasso"`. The Cox de-biased option currently uses a
+Cox active-set Wald approximation after sparse selection, so bootstrap is the
+recommended uncertainty route when resampling is affordable.
+
 ## Early fusion
 
 ```{r}

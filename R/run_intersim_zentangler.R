@@ -67,7 +67,7 @@ run_intersim_zentangler <- function(
   seed = 1234,
   p.train = 1,
   ygen.mode = c("LM", "Friedman", "Friedman2"),
-  outcome.type = c("continuous", "binary"),
+  outcome.type = c("continuous", "binary", "survival"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   maaslin2_random_effect = NULL,
@@ -76,7 +76,7 @@ run_intersim_zentangler <- function(
   maaslin2_analysis_method = "LM",
   maaslin2_standardize = FALSE,
   maaslin2_output_dir = NULL,
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   residualize = FALSE,
@@ -106,7 +106,9 @@ run_intersim_zentangler <- function(
   eval_scopes <- if (identical(fdr_scope, "both")) c("global", "within_view") else fdr_scope
   b_inference <- match.arg(b_inference)
 
-  if (identical(outcome.type, "binary")) {
+  if (identical(outcome.type, "survival")) {
+    y_family <- "survival"
+  } else if (identical(outcome.type, "binary")) {
     y_family <- "binomial"
   } else {
     y_family <- "gaussian"
@@ -168,7 +170,9 @@ run_intersim_zentangler <- function(
         fit_multiview_parallel_zentangler(
           mae = mae_i,
           x_var = "A",
-          y_var = "Y",
+          y_var = if (identical(y_family, "survival")) NULL else "Y",
+          survival_time_var = if (identical(y_family, "survival")) "time" else NULL,
+          survival_event_var = if (identical(y_family, "survival")) "status" else NULL,
           view_names = view_names,
           method_preset = method_preset,
           covariates = covariates,

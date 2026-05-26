@@ -30,13 +30,15 @@ fit_multiview_parallel_zentangler_blocks <- function(
   maaslin2_standardize = FALSE,
   maaslin2_output_dir = NULL,
   fusion_mode = c("early", "intermediate", "late"),
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
+  survival_time_var = NULL,
+  survival_event_var = NULL,
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
   primary_inference = c("model_based", "bootstrap_score"),
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -66,10 +68,23 @@ fit_multiview_parallel_zentangler_blocks <- function(
   b_inference <- match.arg(b_inference)
   bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
   set.seed(seed)
-  if (is.null(y_var) || length(y_var) != 1L || !nzchar(as.character(y_var))) {
+  if (!identical(y_family, "survival") && (is.null(y_var) || length(y_var) != 1L || !nzchar(as.character(y_var)))) {
     stop("y_var is required.", call. = FALSE)
   }
-  y_var <- as.character(y_var)
+  y_var <- if (is.null(y_var)) NULL else as.character(y_var)
+  if (identical(y_family, "survival")) {
+    if (is.null(survival_time_var) || length(survival_time_var) != 1L || !nzchar(as.character(survival_time_var))) {
+      stop("survival_time_var is required when y_family='survival'.", call. = FALSE)
+    }
+    if (is.null(survival_event_var) || length(survival_event_var) != 1L || !nzchar(as.character(survival_event_var))) {
+      stop("survival_event_var is required when y_family='survival'.", call. = FALSE)
+    }
+    survival_time_var <- as.character(survival_time_var)
+    survival_event_var <- as.character(survival_event_var)
+    if (identical(fusion_mode, "intermediate")) {
+      stop("Survival outcomes currently support fusion_mode='early' or 'late'.", call. = FALSE)
+    }
+  }
 
   design <- prepare_zentangler_study_design(
     pheno_df = pheno_df,
@@ -95,13 +110,27 @@ fit_multiview_parallel_zentangler_blocks <- function(
 
   feature_counts_before <- vapply(blocks, function(x) ncol(as.data.frame(x)), integer(1))
 
-  needed <- unique(c(x_var, y_var, covariates, bootstrap_id, maaslin2_random_effect))
+  needed <- unique(c(x_var, y_var, survival_time_var, survival_event_var, covariates, bootstrap_id, maaslin2_random_effect))
   al <- align_samples_multiview_blocks(blocks, pheno_df, needed_pheno_cols = needed)
   blocks0 <- al$blocks
   feature_counts_after <- vapply(blocks0, ncol, integer(1))
   X_raw <- al$pheno[[x_var]]
-  Y_raw <- al$pheno[[y_var]]
-  if (!is.numeric(X_raw) || !is.numeric(Y_raw)) stop("x_var and y_var must be numeric.")
+  if (identical(y_family, "survival")) {
+    time_raw <- suppressWarnings(as.numeric(al$pheno[[survival_time_var]]))
+    event_raw <- suppressWarnings(as.numeric(al$pheno[[survival_event_var]]))
+    if (any(!is.finite(time_raw)) || any(time_raw <= 0)) {
+      stop("survival_time_var must contain finite positive survival times after sample alignment.", call. = FALSE)
+    }
+    if (any(!is.finite(event_raw)) || !all(event_raw %in% c(0, 1))) {
+      stop("survival_event_var must contain 0/1 event indicators after sample alignment.", call. = FALSE)
+    }
+    Y_raw <- survival::Surv(time = time_raw, event = event_raw)
+  } else {
+    Y_raw <- al$pheno[[y_var]]
+  }
+  if (!is.numeric(X_raw) || (!identical(y_family, "survival") && !is.numeric(Y_raw))) {
+    stop("x_var and y_var must be numeric.", call. = FALSE)
+  }
 
   C <- make_covariate_matrix(al$pheno, covariates)
   blocks_model <- blocks0
@@ -111,8 +140,14 @@ fit_multiview_parallel_zentangler_blocks <- function(
   if (residualize && !is.null(C) && ncol(C) > 0) {
     blocks_model <- lapply(blocks0, residualize_matrix, C = C)
     X_model <- as.numeric(residualize_matrix(matrix(X_raw, ncol = 1), C))
-    Y_model <- as.numeric(residualize_matrix(matrix(Y_raw, ncol = 1), C))
-    C_model <- NULL
+    if (identical(y_family, "survival")) {
+      warning("residualize=TRUE does not residualize survival outcomes; covariates are modeled directly in the Cox Y-stage.")
+      Y_model <- Y_raw
+      C_model <- C
+    } else {
+      Y_model <- as.numeric(residualize_matrix(matrix(Y_raw, ncol = 1), C))
+      C_model <- NULL
+    }
   } else {
     C_model <- C
   }
@@ -241,6 +276,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
       pheno_df = al$pheno,
       x_var = x_var,
       y_var = y_var,
+      survival_time_var = survival_time_var,
+      survival_event_var = survival_event_var,
       method_preset = method_preset,
       covariates = covariates,
       residualize = residualize,
@@ -374,6 +411,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
     design_info = design$design_info,
     x_var = x_var,
     y_var = y_var,
+    survival_time_var = survival_time_var,
+    survival_event_var = survival_event_var,
     view_names = names(blocks_model),
     n_views = length(blocks_model),
     covariates = covariates,
@@ -390,6 +429,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
     maaslin2_output_dir = maaslin2_output_dir,
     fusion_mode = fusion_mode,
     y_family = y_family,
+    survival_time_var = survival_time_var,
+    survival_event_var = survival_event_var,
     lambda_choice = lambda_choice,
     glmnet_alpha = glmnet_alpha,
     fdr_method = fdr_method,

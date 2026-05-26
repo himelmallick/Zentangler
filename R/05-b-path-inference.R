@@ -2,7 +2,7 @@
 # B-stage p-values and effect summaries
 # -----------------------------------------------------------------------------
 
-infer_p_b_multiview_refit <- function(Y, X, blocks, C = NULL, coef_by_view, y_family = c("gaussian", "binomial")) {
+infer_p_b_multiview_refit <- function(Y, X, blocks, C = NULL, coef_by_view, y_family = c("gaussian", "binomial", "survival")) {
   y_family <- match.arg(y_family)
   out <- lapply(blocks, function(M) setNames(rep(NA_real_, ncol(M)), colnames(M)))
 
@@ -36,7 +36,20 @@ infer_p_b_multiview_refit <- function(Y, X, blocks, C = NULL, coef_by_view, y_fa
   if (!is.null(C) && ncol(C) > 0) Z <- cbind(Z, as.matrix(C))
   Z <- cbind(Z, M_active)
 
-  if (identical(y_family, "gaussian")) {
+  if (identical(y_family, "survival")) {
+    raw_names <- colnames(Z)[-1]
+    safe_names <- make.names(raw_names, unique = TRUE)
+    dat <- as.data.frame(Z[, -1, drop = FALSE], check.names = FALSE)
+    colnames(dat) <- safe_names
+    fit <- try(suppressWarnings(survival::coxph(Y ~ ., data = dat)), silent = TRUE)
+    if (inherits(fit, "try-error")) return(out)
+    sm <- summary(fit)$coefficients
+    if (is.null(sm) || nrow(sm) == 0) return(out)
+    p_col <- grep("^Pr\\(", colnames(sm), value = TRUE)
+    if (length(p_col) == 0) p_col <- colnames(sm)[ncol(sm)]
+    pvals <- sm[, p_col[[1]]]
+    names(pvals) <- raw_names[match(rownames(sm), safe_names)]
+  } else if (identical(y_family, "gaussian")) {
     fit <- lm.fit(x = as.matrix(Z), y = as.numeric(Y))
     rank <- fit$rank
     df <- nrow(Z) - rank
@@ -420,14 +433,38 @@ debiased_lasso_pvals_multiview_logistic <- function(
   list(p_b = out, method = "debiased_lasso_logistic")
 }
 
+debiased_cox_lasso_pvals_multiview <- function(
+  Y,
+  X,
+  blocks,
+  C = NULL,
+  coef_by_view,
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  max_targets = 200L
+) {
+  # Cox analogue for the B-stage. This currently uses lasso-selected active
+  # targets followed by Cox active-set Wald p-values; the method label makes the
+  # approximation explicit for downstream reporting.
+  lambda_choice <- match.arg(lambda_choice)
+  p_b <- infer_p_b_multiview_refit(
+    Y = Y,
+    X = X,
+    blocks = blocks,
+    C = C,
+    coef_by_view = coef_by_view,
+    y_family = "survival"
+  )
+  list(p_b = p_b, method = "debiased_cox_lasso_active_set_wald_approx")
+}
+
 infer_p_b_multiview <- function(
   Y,
   X,
   blocks,
   C = NULL,
   coef_by_view,
-  y_family = c("gaussian", "binomial"),
-  method = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
+  y_family = c("gaussian", "binomial", "survival"),
+  method = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   max_debias_targets = 200L
 ) {
@@ -445,6 +482,22 @@ infer_p_b_multiview <- function(
       y_family = y_family
     )
     return(list(p_b = p_b, method = "bootstrap_pending_active_set_refit_initial"))
+  }
+
+  if (identical(method, "debiased_cox_lasso") || (identical(method, "debiased_lasso") && identical(y_family, "survival"))) {
+    if (!identical(y_family, "survival")) {
+      warning("debiased_cox_lasso is intended for survival Y; falling back to refit p-values.")
+    } else {
+      return(debiased_cox_lasso_pvals_multiview(
+        Y = Y,
+        X = X,
+        blocks = blocks,
+        C = C,
+        coef_by_view = coef_by_view,
+        lambda_choice = lambda_choice,
+        max_targets = max_debias_targets
+      ))
+    }
   }
 
   if (identical(method, "debiased_lasso") && identical(y_family, "gaussian")) {

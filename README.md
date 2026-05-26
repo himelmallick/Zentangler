@@ -210,6 +210,37 @@ The B/Y-stage fusion model remains Zentangler's multiview model.
 
 ## Fusion Modes
 
+## Survival Outcomes
+
+For time-to-event outcomes, set `y_family = "survival"` and provide the
+follow-up time and 0/1 event columns from `colData(mae)`.
+
+```r
+fit_surv <- fit_multiview_parallel_zentangler(
+  mae = mae,
+  x_var = "A",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  fusion_mode = "early",
+  b_inference = "bootstrap",
+  bootstrap_repeats = 100
+)
+```
+
+Survival Y-stage models use Cox models. Early and late fusion are supported for
+survival outcomes. B-stage survival inference can use:
+
+```r
+b_inference = "refit"
+b_inference = "bootstrap"
+b_inference = "debiased_cox_lasso"
+```
+
+`debiased_cox_lasso` currently reports a Cox active-set Wald approximation after
+sparse selection; use bootstrap when you want resampling-based B-path
+uncertainty.
+
 ### Early Fusion
 
 All selected mediators from all assay views are concatenated and fit in one penalized `glmnet` model.

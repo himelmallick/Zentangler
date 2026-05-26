@@ -32,13 +32,16 @@ fit_multiview_parallel_zentangler(
   maaslin2_standardize = FALSE,
   maaslin2_output_dir = NULL,
   fusion_mode = c("early", "intermediate", "late"),
-  y_family = c("gaussian", "binomial"),
+  y_family = c("gaussian", "binomial", "survival"),
+  survival_time_var = NULL,
+  survival_event_var = NULL,
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
   primary_inference = c("model_based", "bootstrap_score"),
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso",
+    "refit", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -84,13 +87,15 @@ fit_multiview_parallel_zentangler(
 \item{maaslin2_standardize}{Logical passed to MaAsLin2.}
 \item{maaslin2_output_dir}{Optional directory where MaAsLin2 A-stage outputs should be written. If \code{NULL}, temporary directories are used.}
 \item{fusion_mode}{Y-stage fusion mode: early, intermediate, or late.}
-\item{y_family}{Outcome family: Gaussian or binomial. Intermediate cooperative fusion currently supports Gaussian outcomes.}
+\item{y_family}{Outcome family: Gaussian, binomial, or survival. Survival uses Cox models and currently supports early and late fusion.}
+\item{survival_time_var}{Survival follow-up time column in \code{colData(mae)} when \code{y_family = "survival"}.}
+\item{survival_event_var}{Survival event indicator column in \code{colData(mae)} when \code{y_family = "survival"}. Must be coded 0/1.}
 \item{lambda_choice}{Cross-validated glmnet lambda choice.}
 \item{glmnet_alpha}{Glmnet mixing parameter for early and late fusion. Use \code{1} for lasso, values between \code{0} and \code{1} for elastic net, and \code{0} for ridge. Intermediate fusion currently uses the cooperative lasso-style update.}
 \item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
 \item{fdr_scope}{Final FDR scope. Use \code{"global"} to compute \code{q_primary} across all mediators from all views, or \code{"within_view"} to compute \code{q_primary} separately inside each view. Both \code{q_primary_global} and \code{q_primary_within_view} are retained in the output table.}
 \item{primary_inference}{Primary mediator p-value engine. Use \code{"model_based"} to set \code{p_primary} from joint A/B evidence, or \code{"bootstrap_score"} to set \code{p_primary} from bootstrap p-values for the mediation score. Bootstrap-score inference requires \code{bootstrap_repeats > 0}.}
-\item{b_inference}{B-path inference method. \code{"debiased_lasso"} uses Gaussian de-biased lasso for Gaussian outcomes and de-biased logistic lasso for binomial outcomes. \code{"debiased_logistic_lasso"} explicitly requests the binomial de-biased logistic lasso path. \code{"refit"} uses active-set refitting. \code{"bootstrap"} uses bootstrap refits for B-path p-values and requires \code{bootstrap_repeats > 0}.}
+\item{b_inference}{B-path inference method. \code{"debiased_lasso"} uses Gaussian de-biased lasso for Gaussian outcomes and de-biased logistic lasso for binomial outcomes. \code{"debiased_logistic_lasso"} explicitly requests the binomial de-biased logistic lasso path. \code{"debiased_cox_lasso"} requests the Cox survival B-path approximation. \code{"refit"} uses active-set refitting. \code{"bootstrap"} uses bootstrap refits for B-path p-values and requires \code{bootstrap_repeats > 0}.}
 \item{debias_max_targets}{Maximum number of active B-path targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}
 \item{coop_maxit}{Maximum cooperative fusion iterations.}
