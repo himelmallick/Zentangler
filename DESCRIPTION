@@ -1,5 +1,5 @@
 Package: Zentangler
-Title: Multi-View Parallel Mediation Analysis for MultiAssayExperiment Data
+Title: Multi-View Mediation Analysis for MultiAssayExperiment Data
 Version: 0.1.0
 Authors@R: c(
     person("Nalin", "Arora", email = "naa4050@med.cornell.edu", role = "aut"),
@@ -11,7 +11,7 @@ Author: Nalin Arora [aut],
     Himel Mallick [aut, cre, cph] (ORCID:
     <https://orcid.org/0000-0003-4956-2429>)
 Maintainer: Himel Mallick <him4004@med.cornell.edu>
-Description: Provides MAE-first tools for generic multi-view parallel mediation analysis. Zentangler estimates exposure-associated mediator paths within each assay view, optionally screens candidate mediators, fits retained mediators jointly using early, intermediate, or late fusion, and ranks candidate mediators using a-path and b-path evidence. The package also includes MultiAssayExperiment simulation utilities for method development.
+Description: Provides MAE-first tools for generic multi-view mediation analysis. Zentangler estimates exposure-associated mediator paths within each assay view, optionally screens candidate mediators, fits retained mediators jointly using early, intermediate, or late fusion, and ranks candidate mediators using a-path and b-path evidence. The package also includes an experimental k-layer sequential mediation screen based on adjacent mediator-layer correlation screening, plus MultiAssayExperiment simulation utilities for method development.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

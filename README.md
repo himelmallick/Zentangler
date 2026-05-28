@@ -29,6 +29,7 @@ numeric assay block.
 - [B-Stage Inference](#b-stage-inference)
 - [FDR and Active Mediators](#fdr-and-active-mediators)
 - [Bootstrap](#bootstrap)
+- [Sequential Mediation](#sequential-mediation)
 - [Outputs](#outputs)
 - [Simulation Examples](#simulation-examples)
 - [Function Reference](#function-reference)
@@ -85,6 +86,54 @@ score = a * b
 
 where `a` is the exposure-to-mediator coefficient and `b` is the
 mediator-to-outcome coefficient.
+
+## Sequential Mediation
+
+The standard Zentangler API is a parallel mediation model:
+
+```text
+X -> M_j -> Y
+```
+
+Zentangler also includes an experimental k-layer sequential screen for ordered
+mediator pathways:
+
+```text
+X -> M1 -> M2 -> ... -> Mk -> Y
+```
+
+In this mode, the first mediator layer is screened by `X -> M1`, adjacent
+mediator layers are screened by mediator-to-mediator correlation, retained
+links are refit by regression, and each full path is scored as:
+
+```text
+sequential_score = a * prod(d_links) * b_terminal
+```
+
+Example:
+
+```r
+seq_fit <- fit_sequential_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y",
+  stage_views = list(
+    upstream = c("species", "kos"),
+    downstream = c("fecal_metabolites", "plasma_metabolites")
+  ),
+  sis_n = 50,
+  cor_method = "spearman",
+  min_abs_cor = 0.3,
+  cor_q_threshold = 0.25,
+  y_family = "gaussian"
+)
+
+head(zentangler_sequential_paths(seq_fit), 20)
+```
+
+For more than two mediator layers, add more entries to `stage_views`. For
+example, `list(layer1 = "species", layer2 = "kos", layer3 = "plasma_metabolites")`
+fits `X -> layer1 -> layer2 -> layer3 -> Y` paths.
 
 ## Input Requirements
 
@@ -684,6 +733,8 @@ Common benchmark metrics:
 ## Function Reference
 
 - `fit_multiview_parallel_zentangler()`: fit the multiview mediation model
+- `fit_sequential_zentangler()`: fit k-layer sequential mediation paths
+- `zentangler_sequential_paths()`: return the sequential path table
 - `zentangler_all_mediators()`: return the full mediator table
 - `zentangler_top_mediators()`: return top-ranked mediators
 - `zentangler_active_mediators()`: return active mediators under a q threshold
