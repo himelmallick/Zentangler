@@ -256,6 +256,9 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
     abs_score = 0,
     p_primary = p_default,
     p_source = NA_character_,
+    q_primary_global = NA_real_,
+    q_primary_within_view = NA_real_,
+    q_primary = NA_real_,
     stringsAsFactors = FALSE
   )
 
@@ -271,15 +274,23 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
   b_col <- pick_col(x, c("b", "beta", "beta_hat", "beta.hat", "bhat", "b_hat", "effect.b", "beta.my"))
   score_col <- pick_col(x, c("score", "indirect", "indirect_effect", "indirect.effect", "alpha_beta", "alpha*beta", "ab", "IDE", "NIE"))
   p_col <- pick_col(x, c("p_primary", "p.value", "p_value", "pvalue", "p", "pval", "p.val", "p.joint", "p_joint", "pmax", "p.max", "raw.p", "p_raw"))
-  q_col <- pick_col(x, c("q", "q.value", "q_value", "qvalue", "FDR", "BH.FDR", "adj.p", "adjusted.p", "padj", "qval"))
+  q_col <- pick_col(x, c("q_primary", "q_primary_global", "q_primary_within_view", "multimedia_fdr_hat", "fdr_hat", "q", "q.value", "q_value", "qvalue", "FDR", "BH.FDR", "adj.p", "adjusted.p", "padj", "qval"))
+  q_global_col <- pick_col(x, c("q_primary_global", "multimedia_fdr_hat", "fdr_hat"))
+  q_within_col <- pick_col(x, c("q_primary_within_view", "multimedia_fdr_hat", "fdr_hat"))
+  q_primary_col <- pick_col(x, c("q_primary", "multimedia_fdr_hat", "fdr_hat"))
 
   tmp <- data.frame(mediator = med, stringsAsFactors = FALSE)
   tmp$a <- if (!is.na(a_col)) suppressWarnings(as.numeric(x[[a_col]])) else NA_real_
   tmp$b <- if (!is.na(b_col)) suppressWarnings(as.numeric(x[[b_col]])) else NA_real_
   tmp$score <- if (!is.na(score_col)) suppressWarnings(as.numeric(x[[score_col]])) else tmp$a * tmp$b
   tmp$p_primary <- if (!is.na(p_col)) suppressWarnings(as.numeric(x[[p_col]])) else NA_real_
+  tmp$q_primary_global <- if (!is.na(q_global_col)) suppressWarnings(as.numeric(x[[q_global_col]])) else NA_real_
+  tmp$q_primary_within_view <- if (!is.na(q_within_col)) suppressWarnings(as.numeric(x[[q_within_col]])) else NA_real_
+  tmp$q_primary <- if (!is.na(q_primary_col)) suppressWarnings(as.numeric(x[[q_primary_col]])) else NA_real_
   if (all(!is.finite(tmp$p_primary)) && !is.na(q_col)) {
-    tmp$p_primary <- suppressWarnings(as.numeric(x[[q_col]]))
+    if (method %in% c("hima", "hima2")) {
+      tmp$p_primary <- suppressWarnings(as.numeric(x[[q_col]]))
+    }
     p_src <- q_col
   } else {
     p_src <- p_col
@@ -293,12 +304,15 @@ standardize_method_table <- function(x, all_mediators, view, method, rep_id, p_d
   out$b[ok] <- tmp$b[idx[ok]]
   out$score[ok] <- tmp$score[idx[ok]]
   out$p_primary[ok] <- tmp$p_primary[idx[ok]]
+  out$q_primary_global[ok] <- tmp$q_primary_global[idx[ok]]
+  out$q_primary_within_view[ok] <- tmp$q_primary_within_view[idx[ok]]
+  out$q_primary[ok] <- tmp$q_primary[idx[ok]]
   out$p_source[ok] <- p_src
 
   out$b[!is.finite(out$b)] <- 0
   out$score[!is.finite(out$score)] <- 0
   out$abs_score <- abs(out$score)
-  out$p_primary[!is.finite(out$p_primary)] <- p_default
+  out$p_primary[!is.finite(out$p_primary)] <- if (method %in% c("hima", "hima2")) p_default else NA_real_
   out$p_primary <- pmin(1, pmax(0, out$p_primary))
   out
 }
@@ -400,6 +414,24 @@ multimedia_indirect_pathwise_safe <- function(fit, exper) {
   do.call(f, call_args)
 }
 
+multimedia_null_contrast_safe <- function(fit, exper) {
+  f <- get("null_contrast", envir = asNamespace("multimedia"))
+  argn <- names(formals(f))
+  call_args <- list(model = fit, exper = exper)
+  if ("nullification" %in% argn) call_args$nullification <- "M->Y"
+  if ("f" %in% argn) call_args$f <- get("indirect_pathwise", envir = asNamespace("multimedia"))
+  do.call(f, call_args)
+}
+
+multimedia_fdr_summary_safe <- function(contrast, q_value = 1) {
+  f <- get("fdr_summary", envir = asNamespace("multimedia"))
+  argn <- names(formals(f))
+  call_args <- list(contrast)
+  if ("effect" %in% argn) call_args$effect <- "indirect_pathwise"
+  if ("q_value" %in% argn) call_args$q_value <- q_value
+  do.call(f, call_args)
+}
+
 run_multimedia_singleview <- function(M,
                                       pheno,
                                       x_var = "A",
@@ -408,6 +440,7 @@ run_multimedia_singleview <- function(M,
                                       model = c("lm", "rf"),
                                       bootstrap_repeats = 0L,
                                       rf_trees = 500L,
+                                      cores = 1L,
                                       seed = 1L) {
   if (!requireNamespace("multimedia", quietly = TRUE)) {
     stop("Package 'multimedia' is required for method = 'multimedia'.")
@@ -429,7 +462,7 @@ run_multimedia_singleview <- function(M,
     argn <- names(formals(f))
     if ("num.trees" %in% argn) do.call(f, list(num.trees = as.integer(rf_trees))) else f()
   } else {
-    multimedia::lm_model()
+    multimedia::lm_model(progress = FALSE)
   }
 
   fit <- multimedia::multimedia(exper, base_model)
@@ -455,9 +488,56 @@ run_multimedia_singleview <- function(M,
   out$a <- NA_real_
   out$b <- out$score
   out$p_primary <- NA_real_
+  out$q_primary_global <- NA_real_
+  out$q_primary_within_view <- NA_real_
+  out$q_primary <- NA_real_
+  out$multimedia_fdr_hat <- NA_real_
+  out$multimedia_keep_q1 <- NA
+
+  native_fdr <- try({
+    contrast <- multimedia_null_contrast_safe(fit, exper)
+    multimedia_fdr_summary_safe(contrast, q_value = 1)
+  }, silent = TRUE)
+
+  if (!inherits(native_fdr, "try-error") && nrow(as.data.frame(native_fdr)) > 0) {
+    fdr_tab <- as.data.frame(native_fdr, stringsAsFactors = FALSE)
+    med_fdr_col <- pick_col(fdr_tab, c("mediator", "Mediator", "feature", "Feature", "term", "variable", "name"))
+    fdr_col <- pick_col(fdr_tab, c("fdr_hat", "fdr", "q_value", "q", "FDR"))
+    keep_col <- pick_col(fdr_tab, c("keep", "selected", "active"))
+    source_col <- pick_col(fdr_tab, c("source", "Source"))
+    if (!is.na(source_col)) {
+      fdr_tab <- fdr_tab[as.character(fdr_tab[[source_col]]) == "real", , drop = FALSE]
+    }
+    if (!is.na(med_fdr_col) && !is.na(fdr_col) && nrow(fdr_tab) > 0) {
+      fdr_tab <- stats::aggregate(
+        fdr_tab[[fdr_col]],
+        by = list(mediator = as.character(fdr_tab[[med_fdr_col]])),
+        FUN = min,
+        na.rm = TRUE
+      )
+      colnames(fdr_tab)[2] <- "fdr_hat"
+      hit <- match(out$mediator, fdr_tab$mediator)
+      ok <- !is.na(hit)
+      out$multimedia_fdr_hat[ok] <- suppressWarnings(as.numeric(fdr_tab$fdr_hat[hit[ok]]))
+      out$q_primary_global[ok] <- out$multimedia_fdr_hat[ok]
+      out$q_primary_within_view[ok] <- out$multimedia_fdr_hat[ok]
+      out$q_primary[ok] <- out$multimedia_fdr_hat[ok]
+    }
+    if (!is.na(keep_col) && !is.na(med_fdr_col) && nrow(fdr_tab) > 0) {
+      keep_map <- stats::aggregate(
+        as.logical(native_fdr[[keep_col]]),
+        by = list(mediator = as.character(native_fdr[[med_fdr_col]])),
+        FUN = any,
+        na.rm = TRUE
+      )
+      hit <- match(out$mediator, keep_map$mediator)
+      ok <- !is.na(hit)
+      out$multimedia_keep_q1[ok] <- keep_map$x[hit[ok]]
+    }
+  }
 
   bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
-  if (bootstrap_repeats > 0L) {
+  if (all(!is.finite(out$q_primary)) && bootstrap_repeats > 0L) {
     # multimedia exposes bootstrap inference through repeated model refits on
     # resampled mediation_data objects. We implement that explicitly here so
     # that the output is a per-mediator p-value vector compatible with the
@@ -470,7 +550,7 @@ run_multimedia_singleview <- function(M,
       dimnames = list(NULL, out$mediator)
     )
 
-    for (bb in seq_len(bootstrap_repeats)) {
+    fit_bootstrap_one <- function(bb) {
       idx <- sample(seq_len(nrow(df)), size = nrow(df), replace = TRUE)
       df_b <- df[idx, , drop = FALSE]
 
@@ -481,7 +561,7 @@ run_multimedia_singleview <- function(M,
           argn <- names(formals(f))
           if ("num.trees" %in% argn) do.call(f, list(num.trees = as.integer(rf_trees))) else f()
         } else {
-          multimedia::lm_model()
+          multimedia::lm_model(progress = FALSE)
         }
         fit_b <- multimedia::multimedia(exper_b, base_model_b)
         if (exists("estimate", envir = asNamespace("multimedia"), inherits = FALSE)) {
@@ -502,9 +582,30 @@ run_multimedia_singleview <- function(M,
         stringsAsFactors = FALSE
       )
       tmp <- stats::aggregate(score ~ mediator, data = tmp, FUN = mean, na.rm = TRUE)
-      hit <- match(tmp$mediator, colnames(boot_scores))
+      out_b <- setNames(rep(NA_real_, length(out$mediator)), out$mediator)
+      hit <- match(tmp$mediator, names(out_b))
       ok <- !is.na(hit)
-      boot_scores[bb, hit[ok]] <- tmp$score[ok]
+      out_b[hit[ok]] <- tmp$score[ok]
+      out_b
+    }
+
+    cores <- max(1L, as.integer(cores))
+    if (.Platform$OS.type != "windows" && cores > 1L && bootstrap_repeats > 1L) {
+      boot_list <- parallel::mclapply(
+        seq_len(bootstrap_repeats),
+        fit_bootstrap_one,
+        mc.cores = min(cores, bootstrap_repeats),
+        mc.set.seed = TRUE
+      )
+      for (bb in seq_along(boot_list)) {
+        if (is.numeric(boot_list[[bb]]) && length(boot_list[[bb]]) == ncol(boot_scores)) {
+          boot_scores[bb, ] <- boot_list[[bb]]
+        }
+      }
+    } else {
+      for (bb in seq_len(bootstrap_repeats)) {
+        boot_scores[bb, ] <- fit_bootstrap_one(bb)
+      }
     }
 
     pvals <- vapply(out$mediator, function(med) {
@@ -527,6 +628,9 @@ run_multimedia_singleview <- function(M,
 apply_comparator_fdr <- function(tab, fdr_method = c("BH", "BY"), tested_by_view = NULL) {
   fdr_method <- match.arg(fdr_method)
   if (is.null(tab) || nrow(tab) == 0) return(tab)
+  q_global_existing <- if ("q_primary_global" %in% colnames(tab)) tab$q_primary_global else rep(NA_real_, nrow(tab))
+  q_within_existing <- if ("q_primary_within_view" %in% colnames(tab)) tab$q_primary_within_view else rep(NA_real_, nrow(tab))
+  q_existing <- if ("q_primary" %in% colnames(tab)) tab$q_primary else rep(NA_real_, nrow(tab))
 
   # HIMA/HIMA2 return only a selected mediator table rather than one row for
   # every tested mediator. For fair FDR correction, adjust over the full
@@ -556,10 +660,10 @@ apply_comparator_fdr <- function(tab, fdr_method = c("BH", "BY"), tested_by_view
     }
   }
 
-  tab$q_primary_global <- NA_real_
+  tab$q_primary_global <- q_global_existing
   for (method_i in unique(tab$method)) {
     idx_m <- which(tab$method == method_i)
-    ok_m <- is.finite(tab$p_primary[idx_m])
+    ok_m <- is.finite(tab$p_primary[idx_m]) & !is.finite(tab$q_primary_global[idx_m])
     if (any(ok_m)) {
       n_global <- sum(vapply(unique(tab$omics[idx_m]), tested_n_for_view, integer(1)), na.rm = TRUE)
       n_global <- max(n_global, sum(ok_m))
@@ -567,16 +671,16 @@ apply_comparator_fdr <- function(tab, fdr_method = c("BH", "BY"), tested_by_view
     }
   }
 
-  tab$q_primary_within_view <- NA_real_
+  tab$q_primary_within_view <- q_within_existing
   for (idx in split(seq_len(nrow(tab)), paste(tab$method, tab$omics, sep = "::"))) {
-    ok_i <- is.finite(tab$p_primary[idx])
+    ok_i <- is.finite(tab$p_primary[idx]) & !is.finite(tab$q_primary_within_view[idx])
     if (any(ok_i)) {
       n_view <- tested_n_for_view(tab$omics[idx][1])
       n_view <- max(n_view, sum(ok_i))
       tab$q_primary_within_view[idx[ok_i]] <- p.adjust(tab$p_primary[idx[ok_i]], method = fdr_method, n = n_view)
     }
   }
-  tab$q_primary <- tab$q_primary_global
+  tab$q_primary <- ifelse(is.finite(q_existing), q_existing, tab$q_primary_global)
   tab
 }
 
@@ -828,6 +932,8 @@ hima2_penalty <- as.character(args$`hima2-penalty` %||% args$hima2_penalty %||% 
 multimedia_model <- as.character(args$`multimedia-model` %||% args$multimedia_model %||% "lm")
 multimedia_bootstrap <- as.integer(args$`multimedia-bootstrap` %||% args$multimedia_bootstrap %||% 100L)
 multimedia_rf_trees <- as.integer(args$`multimedia-rf-trees` %||% args$multimedia_rf_trees %||% 500L)
+multimedia_cores <- as.integer(args$`multimedia-cores` %||% args$multimedia_cores %||% Sys.getenv("MULTIMEDIA_CORES", unset = "1"))
+if (!is.finite(multimedia_cores) || multimedia_cores < 1L) multimedia_cores <- 1L
 
 all_mediator_rows <- list()
 detail_rows <- list()
@@ -876,6 +982,7 @@ for (rep_i in seq_len(nrep)) {
             model = multimedia_model,
             bootstrap_repeats = multimedia_bootstrap,
             rf_trees = multimedia_rf_trees,
+            cores = multimedia_cores,
             seed = as.integer(row_value(row, "seed", row_value(row, "sim_seed", 1L))) + rep_i
           )
         ),
@@ -945,6 +1052,7 @@ settings <- list(
   multimedia_model = multimedia_model,
   multimedia_bootstrap = multimedia_bootstrap,
   multimedia_rf_trees = multimedia_rf_trees,
+  multimedia_cores = multimedia_cores,
   nrep = nrep,
   top_n = top_n,
   q_threshold = q_thresholds,

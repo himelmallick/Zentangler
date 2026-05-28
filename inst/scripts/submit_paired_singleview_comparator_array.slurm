@@ -23,6 +23,7 @@ HIMA2_PENALTY=${HIMA2_PENALTY:-DBlasso}
 MULTIMEDIA_MODEL=${MULTIMEDIA_MODEL:-lm}
 MULTIMEDIA_BOOTSTRAP=${MULTIMEDIA_BOOTSTRAP:-100}
 MULTIMEDIA_RF_TREES=${MULTIMEDIA_RF_TREES:-500}
+MULTIMEDIA_CORES=${MULTIMEDIA_CORES:-1}
 
 which Rscript
 Rscript --version
@@ -51,4 +52,5 @@ Rscript "${TASK_SCRIPT}" \
   --hima2-penalty "${HIMA2_PENALTY}" \
   --multimedia-model "${MULTIMEDIA_MODEL}" \
   --multimedia-bootstrap "${MULTIMEDIA_BOOTSTRAP}" \
-  --multimedia-rf-trees "${MULTIMEDIA_RF_TREES}"
+  --multimedia-rf-trees "${MULTIMEDIA_RF_TREES}" \
+  --multimedia-cores "${MULTIMEDIA_CORES}"
