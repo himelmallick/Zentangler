@@ -7,8 +7,8 @@ zentangler_validate_stage_views <- function(stage_views, available_views) {
     stage_views <- as.list(available_views)
     names(stage_views) <- paste0("stage", seq_along(stage_views))
   }
-  if (!is.list(stage_views) || length(stage_views) < 2L) {
-    stop("stage_views must be a list with at least two mediator layers.", call. = FALSE)
+  if (!is.list(stage_views) || length(stage_views) < 1L) {
+    stop("stage_views must be a list with at least one mediator layer.", call. = FALSE)
   }
 
   stage_views <- lapply(stage_views, function(x) {
@@ -36,6 +36,34 @@ zentangler_validate_stage_views <- function(stage_views, available_views) {
   stage_views
 }
 
+zentangler_validate_path_templates <- function(path_templates, available_views, allow_parallel_routes = TRUE) {
+  if (is.null(path_templates)) return(NULL)
+  if (!is.list(path_templates) || length(path_templates) == 0L) {
+    stop("path_templates must be a non-empty list of character vectors.", call. = FALSE)
+  }
+  if (is.null(names(path_templates)) || any(!nzchar(names(path_templates)))) {
+    names(path_templates) <- paste0("path", seq_along(path_templates))
+  }
+  path_templates <- lapply(path_templates, function(x) {
+    x <- as.character(x)
+    x <- x[!is.na(x) & nzchar(x)]
+    if (length(x) == 0L) stop("Each path template must contain at least one view.", call. = FALSE)
+    if (length(x) < 2L && !isTRUE(allow_parallel_routes)) {
+      stop(
+        "Sequential path templates must contain at least two views. ",
+        "Set allow_parallel_routes=TRUE to include direct routes such as X -> M4 -> Y.",
+        call. = FALSE
+      )
+    }
+    missing <- setdiff(x, available_views)
+    if (length(missing) > 0L) {
+      stop("path_templates contains views not present in the input: ", paste(missing, collapse = ", "), call. = FALSE)
+    }
+    x
+  })
+  path_templates
+}
+
 zentangler_map_stage_views <- function(stage_views, view_map) {
   if (is.null(stage_views) || is.null(view_map) || nrow(view_map) == 0L) return(stage_views)
   original_to_safe <- setNames(as.character(view_map$view), as.character(view_map$experiment_name))
@@ -47,6 +75,55 @@ zentangler_map_stage_views <- function(stage_views, view_map) {
     mapped[missing] <- safe_to_safe[x[missing]]
     mapped
   })
+}
+
+zentangler_map_path_templates <- function(path_templates, view_map) {
+  if (is.null(path_templates) || is.null(view_map) || nrow(view_map) == 0L) return(path_templates)
+  original_to_safe <- setNames(as.character(view_map$view), as.character(view_map$experiment_name))
+  safe_to_safe <- setNames(as.character(view_map$view), as.character(view_map$view))
+  lapply(path_templates, function(x) {
+    x <- as.character(x)
+    mapped <- original_to_safe[x]
+    missing <- is.na(mapped)
+    mapped[missing] <- safe_to_safe[x[missing]]
+    mapped
+  })
+}
+
+zentangler_check_route_api <- function(path_templates, allow_parallel_routes, internal_route_set = FALSE) {
+  if (isTRUE(internal_route_set)) return(invisible(NULL))
+  if (is.null(path_templates)) return(invisible(NULL))
+  route_lengths <- vapply(path_templates, length, integer(1))
+  if (length(route_lengths) != 1L) {
+    stop(
+      "fit_sequential_zentangler() accepts exactly one sequential route. ",
+      "Use fit_parallel_sequential_zentangler() for multiple routes.",
+      call. = FALSE
+    )
+  }
+  if (route_lengths[[1L]] < 2L && !isTRUE(allow_parallel_routes)) {
+    stop(
+      "fit_sequential_zentangler() requires at least two modalities in its route. ",
+      "Use fit_multiview_parallel_zentangler() for pure parallel mediation, or ",
+      "fit_parallel_sequential_zentangler() for mixed route sets.",
+      call. = FALSE
+    )
+  }
+  invisible(NULL)
+}
+
+zentangler_route_set_type <- function(path_templates = NULL, stage_views = NULL) {
+  if (!is.null(path_templates)) {
+    route_lengths <- vapply(path_templates, length, integer(1))
+    if (length(route_lengths) == 1L && route_lengths[[1L]] > 1L) return("sequential")
+    if (all(route_lengths == 1L)) return("parallel")
+    return("parallel_sequential")
+  }
+  if (!is.null(stage_views)) {
+    if (length(stage_views) == 1L) return("parallel")
+    return("sequential")
+  }
+  NA_character_
 }
 
 zentangler_feature_key <- function(view, mediator) {
@@ -184,92 +261,274 @@ zentangler_estimate_link_effects <- function(links, data_by_key, X, C = NULL) {
   links
 }
 
+zentangler_path_primary_p <- function(p_a, p_d = numeric(0), p_b, b = NA_real_) {
+  if (!is.finite(b) || b == 0) return(NA_real_)
+  vals <- c(p_a, p_d, p_b)
+  if (length(vals) == 0L || any(!is.finite(vals))) return(NA_real_)
+  max(vals)
+}
+
+validate_sequential_path_inference <- function(path_inference) {
+  match.arg(path_inference, choices = c("model_based", "bootstrap_score"))
+}
+
+zentangler_subset_covariates <- function(C, idx) {
+  if (is.null(C) || ncol(C) == 0L) return(NULL)
+  C[idx, , drop = FALSE]
+}
+
+zentangler_estimate_a_one <- function(mediator, X, C = NULL) {
+  dat <- data.frame(mediator = as.numeric(mediator), X = as.numeric(X), check.names = FALSE)
+  if (!is.null(C) && ncol(C) > 0L) dat <- cbind(dat, as.data.frame(C, check.names = FALSE))
+  fit <- try(stats::lm(mediator ~ ., data = dat), silent = TRUE)
+  if (inherits(fit, "try-error")) return(c(a = NA_real_, p_a = NA_real_))
+  co <- summary(fit)$coefficients
+  if (!("X" %in% rownames(co))) return(c(a = NA_real_, p_a = NA_real_))
+  c(a = co["X", "Estimate"], p_a = co["X", "Pr(>|t|)"])
+}
+
+zentangler_bootstrap_sequential_paths <- function(
+  paths,
+  data_by_key,
+  pheno_df,
+  X,
+  Y,
+  C = NULL,
+  y_family = c("gaussian", "binomial", "survival"),
+  fusion_mode = c("early", "intermediate", "late"),
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  debias_max_targets = 200L,
+  coop_rho = 0.2,
+  coop_maxit = 100,
+  coop_tol = 1e-04,
+  repeats = 0L,
+  ci_level = 0.95,
+  seed = 10001L,
+  bootstrap_id = NULL
+) {
+  y_family <- match.arg(y_family)
+  fusion_mode <- match.arg(fusion_mode)
+  lambda_choice <- match.arg(lambda_choice)
+  b_inference <- match.arg(b_inference)
+  debias_max_targets <- max(1L, as.integer(debias_max_targets))
+  repeats <- max(0L, as.integer(repeats))
+  if (repeats < 1L || is.null(paths) || nrow(paths) == 0L) return(NULL)
+  if (!("key_path" %in% colnames(paths))) stop("paths must contain key_path.", call. = FALSE)
+
+  key_ref <- as.character(paths$key_path)
+  score_mat <- matrix(NA_real_, nrow = repeats, ncol = length(key_ref), dimnames = list(NULL, key_ref))
+  active_mat <- matrix(NA_real_, nrow = repeats, ncol = length(key_ref), dimnames = list(NULL, key_ref))
+  failures <- character(0)
+
+  pseudo_blocks <- list(.sequential = matrix(0, nrow = nrow(pheno_df), ncol = 1L, dimnames = list(rownames(pheno_df), ".dummy")))
+
+  for (b in seq_len(repeats)) {
+    bt <- try(
+      make_bootstrap_sample(
+        blocks = pseudo_blocks,
+        pheno_df = pheno_df,
+        bootstrap_id = bootstrap_id,
+        seed = seed + b
+      ),
+      silent = TRUE
+    )
+    if (inherits(bt, "try-error")) {
+      failures <- c(failures, paste0("bootstrap_", b, ": ", conditionMessage(attr(bt, "condition"))))
+      next
+    }
+
+    original_ids <- sub("__boot[0-9]+$", "", rownames(bt$pheno_df))
+    idx <- match(original_ids, rownames(pheno_df))
+    if (anyNA(idx)) {
+      failures <- c(failures, paste0("bootstrap_", b, ": could not match bootstrap sample IDs."))
+      next
+    }
+
+    X_b <- X[idx]
+    Y_b <- if (inherits(Y, "Surv")) Y[idx, , drop = FALSE] else Y[idx]
+    C_b <- zentangler_subset_covariates(C, idx)
+    terminal_keys <- unique(as.character(paths$terminal_key %||% zentangler_feature_key(paths$terminal_view, paths$terminal_mediator)))
+    terminal_keys <- intersect(terminal_keys, names(data_by_key))
+    terminal_df <- as.data.frame(lapply(terminal_keys, function(k) data_by_key[[k]][idx]), check.names = FALSE)
+    colnames(terminal_df) <- terminal_keys
+
+    terminal_effects <- try(
+      zentangler_fit_terminal_effects(
+        Y = Y_b,
+        X = X_b,
+        terminal_df = terminal_df,
+        C = C_b,
+        y_family = y_family,
+        fusion_mode = fusion_mode,
+        lambda_choice = lambda_choice,
+        glmnet_alpha = glmnet_alpha,
+        b_inference = b_inference,
+        debias_max_targets = debias_max_targets,
+        coop_rho = coop_rho,
+        coop_maxit = coop_maxit,
+        coop_tol = coop_tol
+      ),
+      silent = TRUE
+    )
+    if (inherits(terminal_effects, "try-error")) {
+      failures <- c(failures, paste0("bootstrap_", b, ": ", conditionMessage(attr(terminal_effects, "condition"))))
+      next
+    }
+    b_map <- setNames(terminal_effects$b, terminal_effects$terminal_key)
+
+    for (i in seq_len(nrow(paths))) {
+      keys <- strsplit(as.character(paths$key_path[i]), " -> ", fixed = TRUE)[[1L]]
+      if (length(keys) == 0L || any(!(keys %in% names(data_by_key)))) next
+      a_est <- zentangler_estimate_a_one(data_by_key[[keys[[1L]]]][idx], X_b, C_b)
+      d_vals <- numeric(0)
+      if (length(keys) > 1L) {
+        d_vals <- vapply(seq_len(length(keys) - 1L), function(j) {
+          dat <- data.frame(
+            to = as.numeric(data_by_key[[keys[[j + 1L]]]][idx]),
+            X = as.numeric(X_b),
+            from = as.numeric(data_by_key[[keys[[j]]]][idx]),
+            check.names = FALSE
+          )
+          if (!is.null(C_b) && ncol(C_b) > 0L) dat <- cbind(dat, as.data.frame(C_b, check.names = FALSE))
+          fit <- try(stats::lm(to ~ ., data = dat), silent = TRUE)
+          if (inherits(fit, "try-error")) return(NA_real_)
+          co <- stats::coef(fit)
+          as.numeric(co[["from"]] %||% NA_real_)
+        }, numeric(1))
+      }
+      b_val <- b_map[[tail(keys, 1L)]] %||% NA_real_
+      score <- as.numeric(a_est[["a"]]) * prod(d_vals) * as.numeric(b_val)
+      score_mat[b, i] <- score
+      active_mat[b, i] <- as.numeric(is.finite(b_val) && b_val != 0)
+    }
+  }
+
+  list(
+    score_matrix = score_mat,
+    active_matrix = active_mat,
+    ci_level = ci_level,
+    repeats_requested = repeats,
+    repeats_successful = sum(rowSums(is.finite(score_mat)) > 0L),
+    failures = failures
+  )
+}
+
+zentangler_add_sequential_bootstrap_columns <- function(paths, bootstrap, fdr_method = c("BH", "BY"), use_primary = FALSE) {
+  fdr_method <- validate_fdr_method(fdr_method)
+  if (is.null(bootstrap) || is.null(bootstrap$score_matrix) || nrow(paths) == 0L) return(paths)
+  score_mat <- bootstrap$score_matrix
+  active_mat <- bootstrap$active_matrix
+  alpha <- 1 - (bootstrap$ci_level %||% 0.95)
+  paths$sequential_score_boot_mean <- apply(score_mat, 2, mean, na.rm = TRUE)
+  paths$sequential_score_boot_sd <- apply(score_mat, 2, stats::sd, na.rm = TRUE)
+  paths$sequential_score_boot_low <- apply(score_mat, 2, stats::quantile, probs = alpha / 2, na.rm = TRUE, names = FALSE)
+  paths$sequential_score_boot_high <- apply(score_mat, 2, stats::quantile, probs = 1 - alpha / 2, na.rm = TRUE, names = FALSE)
+  paths$path_boot_selection_freq <- apply(active_mat, 2, mean, na.rm = TRUE)
+  paths$p_sequential_score_boot <- bootstrap_score_pvalues(paths$sequential_score, score_mat)
+  paths$p_sequential_score_boot_sign <- bootstrap_score_sign_pvalues(score_mat)
+  if (isTRUE(use_primary)) {
+    ok <- is.finite(paths$p_sequential_score_boot)
+    paths$p_primary_model_based <- paths$p_primary
+    paths$p_primary[ok] <- paths$p_sequential_score_boot[ok]
+    paths$q_primary_global <- stats::p.adjust(paths$p_primary, method = fdr_method)
+    paths$q_primary <- paths$q_primary_global
+  }
+  paths
+}
+
 zentangler_fit_terminal_effects <- function(
   Y,
   X,
   terminal_df,
   C = NULL,
   y_family = c("gaussian", "binomial", "survival"),
-  outcome_model = c("joint", "marginal")
+  fusion_mode = c("early", "intermediate", "late"),
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  debias_max_targets = 200L,
+  coop_rho = 0.2,
+  coop_maxit = 100,
+  coop_tol = 1e-04
 ) {
   y_family <- match.arg(y_family)
-  outcome_model <- match.arg(outcome_model)
+  fusion_mode <- match.arg(fusion_mode)
+  lambda_choice <- match.arg(lambda_choice)
+  b_inference <- match.arg(b_inference)
+  debias_max_targets <- max(1L, as.integer(debias_max_targets))
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
   terminal_keys <- colnames(terminal_df)
   out <- data.frame(
     terminal_key = terminal_keys,
     b = NA_real_,
     p_b = NA_real_,
-    outcome_model = outcome_model,
+    fusion_mode = fusion_mode,
     stringsAsFactors = FALSE
   )
   if (length(terminal_keys) == 0L) return(out)
 
-  use_joint <- identical(outcome_model, "joint")
-  n_extra <- 1L + if (!is.null(C)) ncol(C) else 0L
-  if (use_joint && ncol(terminal_df) >= (nrow(terminal_df) - n_extra - 2L)) {
-    warning("Too many terminal mediators for a stable joint outcome refit; using marginal terminal effects.")
-    use_joint <- FALSE
-    out$outcome_model <- "marginal"
+  key_parts <- strsplit(terminal_keys, "::", fixed = TRUE)
+  terminal_views <- vapply(key_parts, `[`, character(1), 1L)
+  terminal_mediators <- vapply(key_parts, function(x) paste(x[-1L], collapse = "::"), character(1))
+  if (identical(fusion_mode, "intermediate") && length(unique(terminal_views)) < 2L) {
+    stop(
+      "fusion_mode='intermediate' requires at least two terminal views. ",
+      "Use fusion_mode='early' or 'late' for a single terminal modality.",
+      call. = FALSE
+    )
   }
-
-  fit_one <- function(key) {
-    dat <- data.frame(X = as.numeric(X), M = as.numeric(terminal_df[, key]), check.names = FALSE)
-    if (!is.null(C) && ncol(C) > 0L) dat <- cbind(dat, as.data.frame(C, check.names = FALSE))
-    if (identical(y_family, "survival")) {
-      fit <- try(suppressWarnings(survival::coxph(Y ~ ., data = dat)), silent = TRUE)
-    } else if (identical(y_family, "binomial")) {
-      fit <- try(suppressWarnings(stats::glm(as.numeric(Y) ~ ., data = dat, family = stats::binomial())), silent = TRUE)
-    } else {
-      fit <- try(stats::lm(as.numeric(Y) ~ ., data = dat), silent = TRUE)
+  blocks <- lapply(unique(terminal_views), function(view) {
+    idx <- terminal_views == view
+    M <- as.matrix(terminal_df[, idx, drop = FALSE])
+    colnames(M) <- terminal_mediators[idx]
+    M
+  })
+  names(blocks) <- unique(terminal_views)
+  yfit <- fit_y_multiview_stage(
+    Y = Y,
+    X = X,
+    blocks = blocks,
+    C = C,
+    fusion_mode = fusion_mode,
+    y_family = y_family,
+    lambda_choice = lambda_choice,
+    glmnet_alpha = glmnet_alpha,
+    coop_rho = coop_rho,
+    coop_maxit = coop_maxit,
+    coop_tol = coop_tol
+  )
+  p_infer <- infer_p_b_multiview(
+    Y = Y,
+    X = X,
+    blocks = blocks,
+    C = C,
+    coef_by_view = yfit$coef_by_view,
+    y_family = y_family,
+    method = b_inference,
+    lambda_choice = lambda_choice,
+    max_debias_targets = debias_max_targets
+  )
+  for (view in names(blocks)) {
+    for (med in colnames(blocks[[view]])) {
+      key <- zentangler_feature_key(view, med)
+      ii <- match(key, out$terminal_key)
+      if (is.na(ii)) next
+      out$b[ii] <- yfit$coef_by_view[[view]][[med]] %||% NA_real_
+      out$p_b[ii] <- p_infer$p_b[[view]][[med]] %||% NA_real_
     }
-    if (inherits(fit, "try-error")) return(c(b = NA_real_, p_b = NA_real_))
-    sm <- summary(fit)$coefficients
-    if (!("M" %in% rownames(sm))) return(c(b = NA_real_, p_b = NA_real_))
-    p_col <- grep("^Pr\\(", colnames(sm), value = TRUE)
-    if (length(p_col) == 0L) p_col <- colnames(sm)[ncol(sm)]
-    c(b = unname(sm["M", "Estimate"]), p_b = unname(sm["M", p_col[[1L]]]))
   }
-
-  if (!use_joint) {
-    vals <- t(vapply(terminal_keys, fit_one, numeric(2)))
-    out$b <- vals[, "b"]
-    out$p_b <- vals[, "p_b"]
-    return(out)
+  out$b_inference_method <- p_infer$method %||% b_inference
+  if (!any(is.finite(out$b) & out$b != 0)) {
+    warning(
+      "Terminal fusion selected no mediators, so all terminal b coefficients are zero. ",
+      "Consider lambda_choice='lambda.min', a smaller glmnet_alpha, a larger SIS/correlation screen, ",
+      "or a different fusion_mode.",
+      call. = FALSE
+    )
   }
-
-  raw_names <- c("X", if (!is.null(C) && ncol(C) > 0L) colnames(C) else character(0), terminal_keys)
-  safe_names <- make.names(raw_names, unique = TRUE)
-  dat <- data.frame(X = as.numeric(X), check.names = FALSE)
-  if (!is.null(C) && ncol(C) > 0L) dat <- cbind(dat, as.data.frame(C, check.names = FALSE))
-  dat <- cbind(dat, as.data.frame(terminal_df, check.names = FALSE))
-  colnames(dat) <- safe_names
-
-  if (identical(y_family, "survival")) {
-    fit <- try(suppressWarnings(survival::coxph(Y ~ ., data = dat)), silent = TRUE)
-  } else if (identical(y_family, "binomial")) {
-    fit <- try(suppressWarnings(stats::glm(as.numeric(Y) ~ ., data = dat, family = stats::binomial())), silent = TRUE)
-  } else {
-    fit <- try(stats::lm(as.numeric(Y) ~ ., data = dat), silent = TRUE)
-  }
-  if (inherits(fit, "try-error")) {
-    warning("Joint terminal outcome refit failed; using marginal terminal effects.")
-    return(zentangler_fit_terminal_effects(
-      Y = Y, X = X, terminal_df = terminal_df, C = C, y_family = y_family, outcome_model = "marginal"
-    ))
-  }
-
-  sm <- summary(fit)$coefficients
-  p_col <- grep("^Pr\\(", colnames(sm), value = TRUE)
-  if (length(p_col) == 0L) p_col <- colnames(sm)[ncol(sm)]
-  name_map <- setNames(raw_names, safe_names)
-  for (rn in rownames(sm)) {
-    key <- name_map[[rn]]
-    if (is.null(key) || !(key %in% terminal_keys)) next
-    ii <- match(key, out$terminal_key)
-    out$b[ii] <- sm[rn, "Estimate"]
-    out$p_b[ii] <- sm[rn, p_col[[1L]]
-    ]
-  }
+  attr(out, "terminal_yfit") <- yfit
   out
 }
 
@@ -294,7 +553,7 @@ zentangler_extend_paths <- function(paths, links, max_paths = 10000L) {
   out
 }
 
-#' Fit k-layer sequential Zentangler mediation
+#' Fit one k-layer sequential Zentangler mediation route
 #'
 #' Fits a sequential mediation screen for ordered mediator layers such as
 #' `X -> M1 -> M2 -> ... -> Mk -> Y`. The first layer is screened by association
@@ -308,6 +567,12 @@ zentangler_extend_paths <- function(paths, links, max_paths = 10000L) {
 #' @param stage_views List of ordered mediator layers. Each element is a
 #'   character vector of experiment/view names. If `NULL`, `view_names` order is
 #'   used as one view per layer.
+#' @param path_templates Optional one-route list, for example
+#'   `list(route = c("species", "fecal_metabolites"))`. Use
+#'   `fit_parallel_sequential_zentangler()` for multiple routes or mixed
+#'   parallel/sequential route sets.
+#' @param allow_parallel_routes Internal compatibility option. Leave as `FALSE`
+#'   for the public sequential API.
 #' @param view_names Optional subset/order of MAE experiments.
 #' @param assay_names Optional assay names passed to MAE extraction.
 #' @param covariates Optional phenotype covariates.
@@ -324,12 +589,34 @@ zentangler_extend_paths <- function(paths, links, max_paths = 10000L) {
 #'   correlations on exposure and covariates before screening.
 #' @param max_links_per_transition Maximum retained links per adjacent transition.
 #' @param max_paths Maximum full paths to keep while expanding across k layers.
-#' @param outcome_model `"joint"` fits terminal mediators jointly when feasible;
-#'   `"marginal"` fits one terminal mediator at a time.
+#' @param fusion_mode Terminal mediator-to-outcome fusion mode. Uses the same
+#'   early, intermediate, and late fusion vocabulary as the parallel API.
 #' @param fdr_method FDR method for final path-level p-values.
 #' @param fdr_scope Currently `"global"` only for path-level q-values.
 #' @param seed Random seed.
+#' @param lambda_choice Cross-validated glmnet lambda choice for terminal
+#'   fusion.
+#' @param glmnet_alpha Glmnet mixing parameter for early and late terminal
+#'   fusion. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.
+#' @param b_inference Terminal B-stage inference method. Uses the same choices
+#'   as the parallel API: `"debiased_lasso"`, `"debiased_logistic_lasso"`,
+#'   `"debiased_cox_lasso"`, `"refit"`, or `"bootstrap"`.
+#' @param debias_max_targets Maximum active terminal mediators to use in
+#'   debiased B-stage calculations.
+#' @param coop_rho Agreement penalty strength for intermediate terminal fusion.
+#' @param coop_maxit Maximum cooperative updates for intermediate terminal fusion.
+#' @param coop_tol Convergence tolerance for intermediate terminal fusion.
+#' @param path_inference Path-level inference. `"model_based"` uses the
+#'   conservative refit evidence assembled from A-stage, transition-link, and
+#'   terminal B-stage p-values. `"bootstrap_score"` uses bootstrap p-values for
+#'   the complete sequential path score and requires `bootstrap_repeats > 0`.
+#' @param bootstrap_repeats Number of path bootstrap refits. Use 0 to disable.
+#' @param bootstrap_ci_level Bootstrap confidence level.
+#' @param bootstrap_seed Bootstrap random seed.
+#' @param bootstrap_id Optional phenotype column used for cluster bootstrap.
 #' @param duplicate_primary,fill_nonfinite_zero MAE extraction options.
+#' @param .internal_route_set Internal flag used by
+#'   `fit_parallel_sequential_zentangler()`.
 #'
 #' @return A list with settings, transition links, terminal effects, and
 #'   `sequential_paths`.
@@ -339,6 +626,8 @@ fit_sequential_zentangler <- function(
   x_var,
   y_var = NULL,
   stage_views = NULL,
+  path_templates = NULL,
+  allow_parallel_routes = FALSE,
   view_names = NULL,
   assay_names = NULL,
   covariates = NULL,
@@ -355,12 +644,25 @@ fit_sequential_zentangler <- function(
   residualize_links = TRUE,
   max_links_per_transition = 5000L,
   max_paths = 10000L,
-  outcome_model = c("joint", "marginal"),
+  fusion_mode = c("early", "intermediate", "late"),
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  debias_max_targets = 200L,
+  coop_rho = 0.2,
+  coop_maxit = 100,
+  coop_tol = 1e-04,
+  path_inference = c("model_based", "bootstrap_score"),
+  bootstrap_repeats = 0L,
+  bootstrap_ci_level = 0.95,
+  bootstrap_seed = seed + 10000L,
+  bootstrap_id = NULL,
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global"),
   seed = 1,
   duplicate_primary = c("mean", "first"),
-  fill_nonfinite_zero = FALSE
+  fill_nonfinite_zero = FALSE,
+  .internal_route_set = FALSE
 ) {
   start_time <- Sys.time()
   duplicate_primary <- match.arg(duplicate_primary)
@@ -369,7 +671,14 @@ fit_sequential_zentangler <- function(
   screen_method <- match.arg(screen_method)
   cor_method <- match.arg(cor_method)
   cor_fdr_method <- validate_fdr_method(cor_fdr_method)
-  outcome_model <- match.arg(outcome_model)
+  fusion_mode <- match.arg(fusion_mode)
+  lambda_choice <- match.arg(lambda_choice)
+  glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
+  b_inference <- match.arg(b_inference)
+  debias_max_targets <- max(1L, as.integer(debias_max_targets))
+  path_inference <- validate_sequential_path_inference(path_inference)
+  bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
+  bootstrap_ci_level <- as.numeric(bootstrap_ci_level)
   fdr_method <- validate_fdr_method(fdr_method)
   fdr_scope <- match.arg(fdr_scope)
   set.seed(seed)
@@ -388,8 +697,259 @@ fit_sequential_zentangler <- function(
     duplicate_primary = duplicate_primary,
     fill_nonfinite_zero = fill_nonfinite_zero
   )
+  path_templates <- zentangler_map_path_templates(path_templates, inputs$view_map)
+  path_templates <- zentangler_validate_path_templates(
+    path_templates,
+    names(inputs$blocks),
+    allow_parallel_routes = allow_parallel_routes
+  )
+  zentangler_check_route_api(
+    path_templates,
+    allow_parallel_routes = allow_parallel_routes,
+    internal_route_set = .internal_route_set
+  )
+  if (!is.null(path_templates)) {
+    fits <- lapply(names(path_templates), function(path_name) {
+      template <- path_templates[[path_name]]
+      sv <- as.list(template)
+      names(sv) <- paste0("layer", seq_along(template))
+      one <- fit_sequential_zentangler(
+        mae = mae,
+        x_var = x_var,
+        y_var = y_var,
+        stage_views = sv,
+        path_templates = NULL,
+        allow_parallel_routes = allow_parallel_routes,
+        view_names = view_names,
+        assay_names = assay_names,
+        covariates = covariates,
+        y_family = y_family,
+        survival_time_var = survival_time_var,
+        survival_event_var = survival_event_var,
+        sis_n = sis_n,
+        sis_rank = sis_rank,
+        screen_method = screen_method,
+        cor_method = cor_method,
+        min_abs_cor = min_abs_cor,
+        cor_q_threshold = cor_q_threshold,
+        cor_fdr_method = cor_fdr_method,
+        residualize_links = residualize_links,
+        max_links_per_transition = max_links_per_transition,
+        max_paths = max_paths,
+        fusion_mode = if (identical(fusion_mode, "intermediate")) "early" else fusion_mode,
+        lambda_choice = lambda_choice,
+        glmnet_alpha = glmnet_alpha,
+        coop_rho = coop_rho,
+        coop_maxit = coop_maxit,
+        coop_tol = coop_tol,
+        path_inference = "model_based",
+        bootstrap_repeats = 0L,
+        bootstrap_ci_level = bootstrap_ci_level,
+        bootstrap_seed = bootstrap_seed,
+        bootstrap_id = bootstrap_id,
+        fdr_method = fdr_method,
+        fdr_scope = fdr_scope,
+        seed = seed,
+        duplicate_primary = duplicate_primary,
+        fill_nonfinite_zero = fill_nonfinite_zero,
+        .internal_route_set = FALSE
+      )
+      paths <- zentangler_sequential_paths(one)
+      if (nrow(paths) > 0L) {
+        paths$path_template <- path_name
+        paths$view_route <- paste(template, collapse = " -> ")
+        paths$route_type <- if (length(template) == 1L) "parallel_single_view" else "sequential"
+        paths$route_n_views <- length(template)
+        paths <- paths[
+          ,
+          c(
+            "path_template",
+            "view_route",
+            "route_type",
+            "route_n_views",
+            setdiff(colnames(paths), c("path_template", "view_route", "route_type", "route_n_views"))
+          ),
+          drop = FALSE
+        ]
+      }
+      one$sequential_paths <- paths
+      one$paths <- paths
+      one
+    })
+    names(fits) <- names(path_templates)
+
+    combined_paths <- do.call(rbind, lapply(fits, zentangler_sequential_paths))
+    if (is.null(combined_paths)) combined_paths <- data.frame()
+    rownames(combined_paths) <- NULL
+    route_set_type <- zentangler_route_set_type(path_templates = path_templates)
+    bootstrap <- NULL
+    terminal_effects <- data.frame()
+    if (nrow(combined_paths) > 0L && "p_primary" %in% colnames(combined_paths)) {
+      combined_paths$route_set_type <- route_set_type
+      {
+        terminal_keys <- unique(zentangler_feature_key(combined_paths$terminal_view, combined_paths$terminal_mediator))
+        needed <- unique(c(x_var, y_var, survival_time_var, survival_event_var, covariates))
+        al_terminal <- align_samples_multiview_blocks(inputs$blocks, inputs$pheno_df, needed_pheno_cols = needed)
+        X_terminal <- al_terminal$pheno[[x_var]]
+        Y_terminal <- if (identical(y_family, "survival")) {
+          survival::Surv(
+            suppressWarnings(as.numeric(al_terminal$pheno[[survival_time_var]])),
+            suppressWarnings(as.numeric(al_terminal$pheno[[survival_event_var]]))
+          )
+        } else {
+          al_terminal$pheno[[y_var]]
+        }
+        C_terminal <- make_covariate_matrix(al_terminal$pheno, covariates)
+        all_data_by_key <- list()
+        for (view in names(al_terminal$blocks)) {
+          M <- al_terminal$blocks[[view]]
+          keys <- zentangler_feature_key(view, colnames(M))
+          for (j in seq_along(keys)) all_data_by_key[[keys[j]]] <- M[, j]
+        }
+        terminal_data <- list()
+        for (view in names(al_terminal$blocks)) {
+          M <- al_terminal$blocks[[view]]
+          keys <- zentangler_feature_key(view, colnames(M))
+          hit <- intersect(keys, terminal_keys)
+          if (length(hit) == 0L) next
+          idx <- match(hit, keys)
+          for (j in seq_along(hit)) terminal_data[[hit[j]]] <- M[, idx[j]]
+        }
+        terminal_keys <- intersect(terminal_keys, names(terminal_data))
+        terminal_df <- as.data.frame(terminal_data[terminal_keys], check.names = FALSE)
+        rownames(terminal_df) <- rownames(al_terminal$pheno)
+        terminal_effects <- zentangler_fit_terminal_effects(
+          Y = Y_terminal,
+          X = X_terminal,
+          terminal_df = terminal_df,
+          C = C_terminal,
+          y_family = y_family,
+          fusion_mode = fusion_mode,
+          lambda_choice = lambda_choice,
+          glmnet_alpha = glmnet_alpha,
+          b_inference = b_inference,
+          debias_max_targets = debias_max_targets,
+          coop_rho = coop_rho,
+          coop_maxit = coop_maxit,
+          coop_tol = coop_tol
+        )
+        b_map <- setNames(terminal_effects$b, terminal_effects$terminal_key)
+        p_map <- setNames(terminal_effects$p_b, terminal_effects$terminal_key)
+        row_keys <- zentangler_feature_key(combined_paths$terminal_view, combined_paths$terminal_mediator)
+        combined_paths$terminal_key <- row_keys
+        hit <- match(row_keys, names(b_map))
+        ok <- !is.na(hit)
+        combined_paths$b[ok] <- b_map[hit[ok]]
+        combined_paths$p_b[ok] <- p_map[hit[ok]]
+        combined_paths$d_product[!is.finite(combined_paths$d_product)] <- 1
+        combined_paths$sequential_score <- combined_paths$a * combined_paths$d_product * combined_paths$b
+        combined_paths$abs_sequential_score <- abs(combined_paths$sequential_score)
+        combined_paths$p_primary <- vapply(seq_len(nrow(combined_paths)), function(i) {
+          p_d <- if (is.finite(combined_paths$max_p_d[i])) combined_paths$max_p_d[i] else numeric(0)
+          zentangler_path_primary_p(combined_paths$p_a[i], p_d, combined_paths$p_b[i], b = combined_paths$b[i])
+        }, numeric(1))
+        combined_paths$fusion_mode <- fusion_mode
+      }
+      combined_paths$q_primary_global <- stats::p.adjust(combined_paths$p_primary, method = fdr_method)
+      combined_paths$q_primary <- combined_paths$q_primary_global
+      bootstrap <- NULL
+      if (bootstrap_repeats > 0L) {
+        bootstrap <- zentangler_bootstrap_sequential_paths(
+          paths = combined_paths,
+          data_by_key = all_data_by_key,
+          pheno_df = al_terminal$pheno,
+          X = X_terminal,
+          Y = Y_terminal,
+          C = C_terminal,
+          y_family = y_family,
+          fusion_mode = fusion_mode,
+          lambda_choice = lambda_choice,
+          glmnet_alpha = glmnet_alpha,
+          b_inference = b_inference,
+          debias_max_targets = debias_max_targets,
+          coop_rho = coop_rho,
+          coop_maxit = coop_maxit,
+          coop_tol = coop_tol,
+          repeats = bootstrap_repeats,
+          ci_level = bootstrap_ci_level,
+          seed = bootstrap_seed,
+          bootstrap_id = bootstrap_id
+        )
+        combined_paths <- zentangler_add_sequential_bootstrap_columns(
+          combined_paths,
+          bootstrap = bootstrap,
+          fdr_method = fdr_method,
+          use_primary = identical(path_inference, "bootstrap_score")
+        )
+      } else if (identical(path_inference, "bootstrap_score")) {
+        warning("path_inference='bootstrap_score' requires bootstrap_repeats > 0; using model-based path p-values.")
+      }
+      combined_paths <- combined_paths[
+        ,
+        c("route_set_type", setdiff(colnames(combined_paths), "route_set_type")),
+        drop = FALSE
+      ]
+      combined_paths <- combined_paths[order(combined_paths$abs_sequential_score, decreasing = TRUE), , drop = FALSE]
+      rownames(combined_paths) <- NULL
+    }
+
+    end_time <- Sys.time()
+    out <- list(
+      settings = list(
+        input_container = "MultiAssayExperiment",
+        model = route_set_type,
+        route_set_type = route_set_type,
+        path_templates = path_templates,
+        allow_parallel_routes = allow_parallel_routes,
+        x_var = x_var,
+        y_var = y_var,
+        y_family = y_family,
+        covariates = covariates,
+        fusion_mode = fusion_mode,
+        lambda_choice = lambda_choice,
+        glmnet_alpha = glmnet_alpha,
+        b_inference = b_inference,
+        debias_max_targets = debias_max_targets,
+        coop_rho = coop_rho,
+        coop_maxit = coop_maxit,
+        coop_tol = coop_tol,
+        path_inference = path_inference,
+        bootstrap_repeats = bootstrap_repeats,
+        bootstrap_ci_level = bootstrap_ci_level,
+        bootstrap_seed = bootstrap_seed,
+        bootstrap_id = bootstrap_id,
+        fdr_method = fdr_method,
+        fdr_scope = fdr_scope
+      ),
+      diagnostics = list(
+        started = start_time,
+        finished = end_time,
+        runtime_seconds = as.numeric(difftime(end_time, start_time, units = "secs")),
+        n_samples = if (exists("al_terminal")) nrow(al_terminal$pheno) else NA_integer_,
+        n_path_templates = length(path_templates),
+        n_parallel_routes = sum(vapply(path_templates, length, integer(1)) == 1L),
+        n_sequential_routes = sum(vapply(path_templates, length, integer(1)) > 1L),
+        n_paths = nrow(combined_paths),
+        n_active_paths_q025 = sum(is.finite(combined_paths$q_primary) & combined_paths$q_primary <= 0.25, na.rm = TRUE),
+        n_terminal_effects = if (exists("terminal_effects")) nrow(terminal_effects) else NA_integer_,
+        n_nonzero_terminal_b = if (exists("terminal_effects") && nrow(terminal_effects) > 0L) sum(is.finite(terminal_effects$b) & terminal_effects$b != 0, na.rm = TRUE) else 0L,
+        bootstrap_repeats_requested = bootstrap_repeats,
+        bootstrap_repeats_successful = if (!is.null(bootstrap)) bootstrap$repeats_successful else 0L,
+        bootstrap_failures = if (!is.null(bootstrap)) bootstrap$failures else character(0)
+      ),
+      path_fits = fits,
+      transition_links = do.call(rbind, lapply(fits, zentangler_sequential_edges)),
+      terminal_effects = if (exists("terminal_effects")) terminal_effects else data.frame(),
+      sequential_paths = combined_paths,
+      paths = combined_paths,
+      bootstrap = bootstrap
+    )
+    class(out) <- c("zentangler_sequential_fit", "list")
+    return(out)
+  }
   stage_views <- zentangler_map_stage_views(stage_views, inputs$view_map)
   stage_views <- zentangler_validate_stage_views(stage_views, names(inputs$blocks))
+  route_set_type <- zentangler_route_set_type(stage_views = stage_views)
   needed <- unique(c(x_var, y_var, survival_time_var, survival_event_var, covariates))
   al <- align_samples_multiview_blocks(inputs$blocks, inputs$pheno_df, needed_pheno_cols = needed)
   blocks <- al$blocks
@@ -512,6 +1072,7 @@ fit_sequential_zentangler <- function(
     if (length(paths) == 0L || length(current_keys) == 0L) break
   }
 
+  bootstrap <- NULL
   if (length(paths) == 0L) {
     sequential_paths <- data.frame()
     terminal_effects <- data.frame()
@@ -525,7 +1086,14 @@ fit_sequential_zentangler <- function(
       terminal_df = terminal_df,
       C = C,
       y_family = y_family,
-      outcome_model = outcome_model
+      fusion_mode = fusion_mode,
+      lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha,
+      b_inference = b_inference,
+      debias_max_targets = debias_max_targets,
+      coop_rho = coop_rho,
+      coop_maxit = coop_maxit,
+      coop_tol = coop_tol
     )
 
     link_all <- do.call(rbind, transition_links)
@@ -533,27 +1101,33 @@ fit_sequential_zentangler <- function(
     for (i in seq_along(paths)) {
       keys <- paths[[i]]$keys
       terminal_key <- tail(keys, 1L)
-      link_hits <- lapply(seq_len(length(keys) - 1L), function(j) {
-        hit <- which(link_all$from_key == keys[j] & link_all$to_key == keys[j + 1L])
-        if (length(hit) == 0L) NA_integer_ else hit[[1L]]
-      })
-      link_hits <- unlist(link_hits)
-      link_dat <- link_all[link_hits, , drop = FALSE]
+      if (length(keys) > 1L) {
+        link_hits <- lapply(seq_len(length(keys) - 1L), function(j) {
+          hit <- which(link_all$from_key == keys[j] & link_all$to_key == keys[j + 1L])
+          if (length(hit) == 0L) NA_integer_ else hit[[1L]]
+        })
+        link_hits <- unlist(link_hits)
+        link_dat <- link_all[link_hits, , drop = FALSE]
+      } else {
+        link_dat <- data.frame(d_hat = numeric(0), p_d = numeric(0), abs_cor = numeric(0), q_cor = numeric(0))
+      }
       a_row <- a_lookup[match(keys[[1L]], a_lookup$key), , drop = FALSE]
       b_row <- terminal_effects[match(terminal_key, terminal_effects$terminal_key), , drop = FALSE]
       path_meta <- feature_meta[match(keys, feature_meta$key), , drop = FALSE]
       d_vals <- link_dat$d_hat
-      p_vals <- c(a_row$p_a, link_dat$p_d, b_row$p_b)
       score <- as.numeric(a_row$a) * prod(d_vals) * as.numeric(b_row$b)
       path_rows[[i]] <- data.frame(
         path_id = i,
         n_layers = length(keys),
+        route_set_type = route_set_type,
+        route_type = if (length(keys) == 1L) "parallel_single_view" else "sequential",
         mediator_path = paste(paste(path_meta$view, path_meta$mediator, sep = ":"), collapse = " -> "),
         key_path = paste(keys, collapse = " -> "),
         first_view = path_meta$view[[1L]],
         first_mediator = path_meta$mediator[[1L]],
         terminal_view = tail(path_meta$view, 1L),
         terminal_mediator = tail(path_meta$mediator, 1L),
+        terminal_key = terminal_key,
         a = as.numeric(a_row$a),
         d_product = prod(d_vals),
         b = as.numeric(b_row$b),
@@ -562,15 +1136,53 @@ fit_sequential_zentangler <- function(
         p_a = as.numeric(a_row$p_a),
         max_p_d = if (any(is.finite(link_dat$p_d))) max(link_dat$p_d, na.rm = TRUE) else NA_real_,
         p_b = as.numeric(b_row$p_b),
-        p_primary = if (any(is.finite(p_vals))) max(p_vals, na.rm = TRUE) else NA_real_,
-        min_abs_cor = min(link_dat$abs_cor, na.rm = TRUE),
-        max_q_cor = max(link_dat$q_cor, na.rm = TRUE),
+        fusion_mode = as.character(b_row$fusion_mode),
+        p_primary = zentangler_path_primary_p(
+          p_a = as.numeric(a_row$p_a),
+          p_d = link_dat$p_d,
+          p_b = as.numeric(b_row$p_b),
+          b = as.numeric(b_row$b)
+        ),
+        min_abs_cor = if (any(is.finite(link_dat$abs_cor))) min(link_dat$abs_cor, na.rm = TRUE) else NA_real_,
+        max_q_cor = if (any(is.finite(link_dat$q_cor))) max(link_dat$q_cor, na.rm = TRUE) else NA_real_,
         stringsAsFactors = FALSE
       )
     }
     sequential_paths <- do.call(rbind, path_rows)
     sequential_paths$q_primary_global <- stats::p.adjust(sequential_paths$p_primary, method = fdr_method)
     sequential_paths$q_primary <- sequential_paths$q_primary_global
+    bootstrap <- NULL
+    if (bootstrap_repeats > 0L) {
+      bootstrap <- zentangler_bootstrap_sequential_paths(
+        paths = sequential_paths,
+        data_by_key = data_by_key,
+        pheno_df = pheno_df,
+        X = X,
+        Y = Y,
+        C = C,
+        y_family = y_family,
+        fusion_mode = fusion_mode,
+        lambda_choice = lambda_choice,
+        glmnet_alpha = glmnet_alpha,
+        b_inference = b_inference,
+        debias_max_targets = debias_max_targets,
+        coop_rho = coop_rho,
+        coop_maxit = coop_maxit,
+        coop_tol = coop_tol,
+        repeats = bootstrap_repeats,
+        ci_level = bootstrap_ci_level,
+        seed = bootstrap_seed,
+        bootstrap_id = bootstrap_id
+      )
+      sequential_paths <- zentangler_add_sequential_bootstrap_columns(
+        sequential_paths,
+        bootstrap = bootstrap,
+        fdr_method = fdr_method,
+        use_primary = identical(path_inference, "bootstrap_score")
+      )
+    } else if (identical(path_inference, "bootstrap_score")) {
+      warning("path_inference='bootstrap_score' requires bootstrap_repeats > 0; using model-based path p-values.")
+    }
     sequential_paths <- sequential_paths[order(sequential_paths$abs_sequential_score, decreasing = TRUE), , drop = FALSE]
     rownames(sequential_paths) <- NULL
   }
@@ -579,13 +1191,15 @@ fit_sequential_zentangler <- function(
   out <- list(
     settings = list(
       input_container = "MultiAssayExperiment",
-      model = "sequential",
+      model = route_set_type,
+      route_set_type = route_set_type,
       x_var = x_var,
       y_var = y_var,
       y_family = y_family,
       survival_time_var = survival_time_var,
       survival_event_var = survival_event_var,
       stage_views = stage_views,
+      allow_parallel_routes = allow_parallel_routes,
       covariates = covariates,
       sis_n = sis_n,
       sis_rank = sis_rank,
@@ -595,7 +1209,19 @@ fit_sequential_zentangler <- function(
       cor_q_threshold = cor_q_threshold,
       cor_fdr_method = cor_fdr_method,
       residualize_links = residualize_links,
-      outcome_model = outcome_model,
+      fusion_mode = fusion_mode,
+      lambda_choice = lambda_choice,
+      glmnet_alpha = glmnet_alpha,
+      b_inference = b_inference,
+      debias_max_targets = debias_max_targets,
+      coop_rho = coop_rho,
+      coop_maxit = coop_maxit,
+      coop_tol = coop_tol,
+      path_inference = path_inference,
+      bootstrap_repeats = bootstrap_repeats,
+      bootstrap_ci_level = bootstrap_ci_level,
+      bootstrap_seed = bootstrap_seed,
+      bootstrap_id = bootstrap_id,
       fdr_method = fdr_method,
       fdr_scope = fdr_scope
     ),
@@ -605,7 +1231,15 @@ fit_sequential_zentangler <- function(
       runtime_seconds = as.numeric(difftime(end_time, start_time, units = "secs")),
       n_samples = nrow(pheno_df),
       n_layers = length(stage_views),
-      n_paths = nrow(sequential_paths)
+      n_paths = nrow(sequential_paths),
+      n_active_paths_q025 = sum(is.finite(sequential_paths$q_primary) & sequential_paths$q_primary <= 0.25, na.rm = TRUE),
+      n_first_layer_selected = length(first_selected),
+      n_transition_links = sum(vapply(transition_links, nrow, integer(1))),
+      n_terminal_effects = nrow(terminal_effects),
+      n_nonzero_terminal_b = if (nrow(terminal_effects) > 0L) sum(is.finite(terminal_effects$b) & terminal_effects$b != 0, na.rm = TRUE) else 0L,
+      bootstrap_repeats_requested = bootstrap_repeats,
+      bootstrap_repeats_successful = if (!is.null(bootstrap)) bootstrap$repeats_successful else 0L,
+      bootstrap_failures = if (!is.null(bootstrap)) bootstrap$failures else character(0)
     ),
     sample_ids = rownames(pheno_df),
     feature_metadata = feature_meta,
@@ -613,15 +1247,119 @@ fit_sequential_zentangler <- function(
     transition_links = transition_links,
     terminal_effects = terminal_effects,
     sequential_paths = sequential_paths,
-    paths = sequential_paths
+    paths = sequential_paths,
+    bootstrap = bootstrap
   )
   class(out) <- c("zentangler_sequential_fit", "list")
   out
 }
 
+#' Fit user-specified parallel plus sequential route sets
+#'
+#' This API runs a user-specified set of mediation routes in parallel. Each route
+#' may be a true sequential route such as `X -> M1 -> M2 -> Y`, or a one-view
+#' parallel route such as `X -> M4 -> Y`.
+#'
+#' @inheritParams fit_sequential_zentangler
+#' @param path_templates Required list of explicit routes. Each element is a
+#'   character vector of view names.
+#'
+#' @return A `zentangler_sequential_fit` object with `route_set_type =
+#'   "parallel_sequential"` when both route types are present, or when multiple
+#'   routes are run in parallel.
+#' @export
+fit_parallel_sequential_zentangler <- function(
+  mae,
+  x_var,
+  y_var = NULL,
+  path_templates,
+  view_names = NULL,
+  assay_names = NULL,
+  covariates = NULL,
+  y_family = c("gaussian", "binomial", "survival"),
+  survival_time_var = NULL,
+  survival_event_var = NULL,
+  sis_n = 50L,
+  sis_rank = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none"),
+  cor_method = c("spearman", "pearson"),
+  min_abs_cor = 0.3,
+  cor_q_threshold = 0.25,
+  cor_fdr_method = c("BH", "BY"),
+  residualize_links = TRUE,
+  max_links_per_transition = 5000L,
+  max_paths = 10000L,
+  fusion_mode = c("early", "intermediate", "late"),
+  lambda_choice = c("lambda.1se", "lambda.min"),
+  glmnet_alpha = 1,
+  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  debias_max_targets = 200L,
+  coop_rho = 0.2,
+  coop_maxit = 100,
+  coop_tol = 1e-04,
+  path_inference = c("model_based", "bootstrap_score"),
+  bootstrap_repeats = 0L,
+  bootstrap_ci_level = 0.95,
+  bootstrap_seed = seed + 10000L,
+  bootstrap_id = NULL,
+  fdr_method = c("BH", "BY"),
+  fdr_scope = c("global"),
+  seed = 1,
+  duplicate_primary = c("mean", "first"),
+  fill_nonfinite_zero = FALSE
+) {
+  if (missing(path_templates) || is.null(path_templates)) {
+    stop("path_templates is required for fit_parallel_sequential_zentangler().", call. = FALSE)
+  }
+  fit_sequential_zentangler(
+    mae = mae,
+    x_var = x_var,
+    y_var = y_var,
+    stage_views = NULL,
+    path_templates = path_templates,
+    allow_parallel_routes = TRUE,
+    view_names = view_names,
+    assay_names = assay_names,
+    covariates = covariates,
+    y_family = y_family,
+    survival_time_var = survival_time_var,
+    survival_event_var = survival_event_var,
+    sis_n = sis_n,
+    sis_rank = sis_rank,
+    screen_method = screen_method,
+    cor_method = cor_method,
+    min_abs_cor = min_abs_cor,
+    cor_q_threshold = cor_q_threshold,
+    cor_fdr_method = cor_fdr_method,
+    residualize_links = residualize_links,
+    max_links_per_transition = max_links_per_transition,
+    max_paths = max_paths,
+    fusion_mode = fusion_mode,
+    lambda_choice = lambda_choice,
+    glmnet_alpha = glmnet_alpha,
+    b_inference = b_inference,
+    debias_max_targets = debias_max_targets,
+    coop_rho = coop_rho,
+    coop_maxit = coop_maxit,
+    coop_tol = coop_tol,
+    path_inference = path_inference,
+    bootstrap_repeats = bootstrap_repeats,
+    bootstrap_ci_level = bootstrap_ci_level,
+    bootstrap_seed = bootstrap_seed,
+    bootstrap_id = bootstrap_id,
+    fdr_method = fdr_method,
+    fdr_scope = fdr_scope,
+    seed = seed,
+    duplicate_primary = duplicate_primary,
+    fill_nonfinite_zero = fill_nonfinite_zero,
+    .internal_route_set = TRUE
+  )
+}
+
 #' Extract sequential Zentangler paths
 #'
-#' @param fit Output from `fit_sequential_zentangler()`.
+#' @param fit Output from `fit_sequential_zentangler()` or
+#'   `fit_parallel_sequential_zentangler()`.
 #' @return Data frame of sequential paths.
 #' @export
 zentangler_sequential_paths <- function(fit) {
@@ -629,4 +1367,192 @@ zentangler_sequential_paths <- function(fit) {
   if (is.null(out)) return(data.frame())
   rownames(out) <- NULL
   out
+}
+
+#' Extract sequential Zentangler transition edges
+#'
+#' @param fit Output from `fit_sequential_zentangler()` or
+#'   `fit_parallel_sequential_zentangler()`.
+#' @return Data frame of retained adjacent mediator-to-mediator links.
+#' @export
+zentangler_sequential_edges <- function(fit) {
+  if (!is.null(fit$transition_links) && is.data.frame(fit$transition_links)) {
+    out <- fit$transition_links
+    rownames(out) <- NULL
+    return(out)
+  }
+  if (!is.null(fit$transition_links) && is.list(fit$transition_links)) {
+    out <- do.call(rbind, fit$transition_links)
+    if (is.null(out)) return(data.frame())
+    rownames(out) <- NULL
+    return(out)
+  }
+  if (!is.null(fit$path_fits) && is.list(fit$path_fits)) {
+    rows <- lapply(names(fit$path_fits), function(route) {
+      one <- zentangler_sequential_edges(fit$path_fits[[route]])
+      if (nrow(one) == 0L) return(one)
+      one$path_template <- route
+      one[, c("path_template", setdiff(colnames(one), "path_template")), drop = FALSE]
+    })
+    out <- do.call(rbind, rows)
+    if (is.null(out)) return(data.frame())
+    rownames(out) <- NULL
+    return(out)
+  }
+  data.frame()
+}
+
+#' Extract sequential Zentangler terminal effects
+#'
+#' @param fit Output from `fit_sequential_zentangler()` or
+#'   `fit_parallel_sequential_zentangler()`.
+#' @return Data frame of terminal mediator-to-outcome coefficients.
+#' @export
+zentangler_sequential_terminals <- function(fit) {
+  out <- fit$terminal_effects
+  if (is.null(out)) return(data.frame())
+  rownames(out) <- NULL
+  out
+}
+
+#' Extract sequential Zentangler diagnostics
+#'
+#' @param fit Output from `fit_sequential_zentangler()` or
+#'   `fit_parallel_sequential_zentangler()`.
+#' @return Data frame with run-level diagnostic counts.
+#' @export
+zentangler_sequential_diagnostics <- function(fit) {
+  d <- fit$diagnostics %||% list()
+  if (length(d) == 0L) return(data.frame())
+  scalar <- vapply(d, function(x) length(x) == 1L, logical(1))
+  out <- as.data.frame(d[scalar], stringsAsFactors = FALSE)
+  if ("bootstrap_failures" %in% names(d)) {
+    out$n_bootstrap_failures <- length(d$bootstrap_failures)
+  }
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_sequential_active_paths <- function(fit, q_threshold = 0.25, q_col = "q_primary") {
+  q_threshold <- max(zentangler_clean_q_thresholds(q_threshold))
+  tab <- zentangler_sequential_paths(fit)
+  if (nrow(tab) == 0L) return(tab)
+  if (!(q_col %in% colnames(tab))) stop("q_col not found in sequential path table: ", q_col)
+  keep <- is.finite(tab[[q_col]]) & tab[[q_col]] <= q_threshold & is.finite(tab$b) & tab$b != 0
+  out <- tab[keep, , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_sequential_top_paths <- function(
+  fit,
+  n = 20L,
+  order_by = c("abs_sequential_score", "q_primary", "p_primary", "sequential_score"),
+  decreasing = NULL
+) {
+  order_by <- match.arg(order_by)
+  tab <- zentangler_sequential_paths(fit)
+  if (nrow(tab) == 0L) return(tab)
+  if (!(order_by %in% colnames(tab))) stop("order_by not found in sequential path table: ", order_by)
+  if (is.null(decreasing)) decreasing <- order_by %in% c("abs_sequential_score", "sequential_score")
+  ord <- order(tab[[order_by]], decreasing = decreasing, na.last = TRUE)
+  out <- tab[ord, , drop = FALSE]
+  out <- out[seq_len(min(as.integer(n), nrow(out))), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_sequential_threshold_summary <- function(
+  fit,
+  q_threshold = seq(0.05, 0.25, by = 0.05),
+  q_cols = NULL
+) {
+  tab <- zentangler_sequential_paths(fit)
+  if (nrow(tab) == 0L) return(data.frame())
+  q_threshold <- zentangler_clean_q_thresholds(q_threshold)
+  if (is.null(q_cols)) q_cols <- intersect(c("q_primary", "q_primary_global"), colnames(tab))
+  q_cols <- intersect(q_cols, colnames(tab))
+  if (length(q_cols) == 0L) stop("No valid q-value columns found in sequential path table.")
+
+  rows <- list()
+  ii <- 0L
+  for (q_col in q_cols) {
+    for (threshold in q_threshold) {
+      active <- is.finite(tab[[q_col]]) & tab[[q_col]] <= threshold & is.finite(tab$b) & tab$b != 0
+      route_group <- if ("route_type" %in% colnames(tab)) split(seq_len(nrow(tab)), tab$route_type) else list(all = seq_len(nrow(tab)))
+      active_by_route <- vapply(route_group, function(idx) sum(active[idx], na.rm = TRUE), integer(1))
+      n_active_sequential <- if ("sequential" %in% names(active_by_route)) active_by_route[["sequential"]] else 0L
+      n_active_parallel_single_view <- if ("parallel_single_view" %in% names(active_by_route)) {
+        active_by_route[["parallel_single_view"]]
+      } else {
+        0L
+      }
+      ii <- ii + 1L
+      rows[[ii]] <- data.frame(
+        q_col = q_col,
+        q_threshold = threshold,
+        n_active_paths = sum(active, na.rm = TRUE),
+        n_positive_paths = sum(active & is.finite(tab$sequential_score) & tab$sequential_score > 0, na.rm = TRUE),
+        n_negative_paths = sum(active & is.finite(tab$sequential_score) & tab$sequential_score < 0, na.rm = TRUE),
+        n_active_sequential = n_active_sequential,
+        n_active_parallel_single_view = n_active_parallel_single_view,
+        min_q = if (any(is.finite(tab[[q_col]]))) min(tab[[q_col]], na.rm = TRUE) else NA_real_,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  out <- do.call(rbind, rows)
+  rownames(out) <- NULL
+  out
+}
+
+zentangler_sequential_model_summary <- function(fit, q_threshold = 0.25) {
+  q_threshold <- max(zentangler_clean_q_thresholds(q_threshold))
+  tab <- zentangler_sequential_paths(fit)
+  active <- if (nrow(tab) > 0L) {
+    is.finite(tab$q_primary) & tab$q_primary <= q_threshold & is.finite(tab$b) & tab$b != 0
+  } else {
+    logical(0)
+  }
+  settings <- fit$settings %||% list()
+  diagnostics <- fit$diagnostics %||% list()
+  data.frame(
+    input_container = settings$input_container %||% NA_character_,
+    model = settings$model %||% settings$route_set_type %||% NA_character_,
+    route_set_type = settings$route_set_type %||% NA_character_,
+    n_samples = diagnostics$n_samples %||% NA_integer_,
+    n_paths = nrow(tab),
+    n_active_paths = sum(active, na.rm = TRUE),
+    n_terminal_effects = diagnostics$n_terminal_effects %||% nrow(zentangler_sequential_terminals(fit)),
+    n_nonzero_terminal_b = diagnostics$n_nonzero_terminal_b %||% NA_integer_,
+    n_transition_links = diagnostics$n_transition_links %||% nrow(zentangler_sequential_edges(fit)),
+    fusion_mode = settings$fusion_mode %||% NA_character_,
+    lambda_choice = settings$lambda_choice %||% NA_character_,
+    glmnet_alpha = settings$glmnet_alpha %||% NA_real_,
+    b_inference = settings$b_inference %||% NA_character_,
+    path_inference = settings$path_inference %||% "model_based",
+    fdr_method = settings$fdr_method %||% NA_character_,
+    runtime_seconds = diagnostics$runtime_seconds %||% NA_real_,
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Summarize a sequential Zentangler fit
+#'
+#' @param fit Output from `fit_sequential_zentangler()` or
+#'   `fit_parallel_sequential_zentangler()`.
+#' @param q_threshold One or more q-value thresholds.
+#' @return A list of model, threshold, diagnostics, path, edge, and terminal
+#'   summaries.
+#' @export
+summarize_sequential_zentangler <- function(fit, q_threshold = 0.25) {
+  list(
+    model_summary = zentangler_sequential_model_summary(fit, q_threshold = max(zentangler_clean_q_thresholds(q_threshold))),
+    threshold_summary = zentangler_sequential_threshold_summary(fit, q_threshold = q_threshold),
+    diagnostics = zentangler_sequential_diagnostics(fit),
+    top_paths = zentangler_sequential_top_paths(fit, n = 20L),
+    active_paths = zentangler_sequential_active_paths(fit, q_threshold = max(zentangler_clean_q_thresholds(q_threshold))),
+    edges = zentangler_sequential_edges(fit),
+    terminals = zentangler_sequential_terminals(fit)
+  )
 }

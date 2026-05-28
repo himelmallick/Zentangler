@@ -229,17 +229,27 @@ fit_y_multiview_cooperative_intermediate <- function(
         y_aug <- target_main
       }
 
-      fit_k <- glmnet::glmnet(
-        x = as.matrix(x_aug),
-        y = y_aug,
-        family = "gaussian",
-        alpha = 1,
-        lambda = lambdas[view],
-        intercept = FALSE,
-        standardize = TRUE
-      )
-      b_new <- as.matrix(coef(fit_k, s = lambdas[view]))[-1, 1]
-      names(b_new) <- colnames(M)
+      if (ncol(M) == 1L) {
+        denom <- sum(as.numeric(x_aug)^2)
+        b_new <- if (is.finite(denom) && denom > 0) {
+          sum(as.numeric(x_aug) * y_aug) / denom
+        } else {
+          0
+        }
+        b_new <- setNames(b_new, colnames(M))
+      } else {
+        fit_k <- glmnet::glmnet(
+          x = as.matrix(x_aug),
+          y = y_aug,
+          family = "gaussian",
+          alpha = 1,
+          lambda = lambdas[view],
+          intercept = FALSE,
+          standardize = TRUE
+        )
+        b_new <- as.matrix(coef(fit_k, s = lambdas[view]))[-1, 1]
+        names(b_new) <- colnames(M)
+      }
       betas[[view]] <- b_new
     }
 

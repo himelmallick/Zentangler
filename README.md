@@ -95,8 +95,15 @@ The standard Zentangler API is a parallel mediation model:
 X -> M_j -> Y
 ```
 
-Zentangler also includes an experimental k-layer sequential screen for ordered
-mediator pathways:
+Zentangler now separates three model classes:
+
+| Model class | Meaning | API |
+|---|---|---|
+| `parallel` | One or more mediators modeled as `X -> M -> Y` without mediator-to-mediator links | `fit_multiview_parallel_zentangler()` |
+| `sequential` | One explicit ordered route, such as `X -> M1 -> M2 -> Y` | `fit_sequential_zentangler()` |
+| `parallel_sequential` | A user-specified set of routes run in parallel, where each route may be sequential or single-view | `fit_parallel_sequential_zentangler()` |
+
+The k-layer sequential route form is:
 
 ```text
 X -> M1 -> M2 -> ... -> Mk -> Y
@@ -109,6 +116,15 @@ links are refit by regression, and each full path is scored as:
 ```text
 sequential_score = a * prod(d_links) * b_terminal
 ```
+
+The terminal mediator-to-outcome stage supports the same fusion vocabulary as
+the parallel API:
+
+| `fusion_mode` | Meaning |
+|---|---|
+| `"early"` | combine terminal mediators first, then fit one penalized outcome model |
+| `"intermediate"` | use the cooperative/intermediate learner across terminal views; requires at least two terminal views and currently supports Gaussian outcomes |
+| `"late"` | fit terminal views separately, then combine view-level scores |
 
 Example:
 
@@ -129,11 +145,134 @@ seq_fit <- fit_sequential_zentangler(
 )
 
 head(zentangler_sequential_paths(seq_fit), 20)
+zentangler_sequential_edges(seq_fit)
+zentangler_sequential_terminals(seq_fit)
+summarize_sequential_zentangler(seq_fit)
 ```
+
+Sequential fits expose the same kind of result layers as the parallel API:
+
+| Helper | Returns |
+|---|---|
+| `zentangler_sequential_paths()` | one row per retained complete path |
+| `zentangler_sequential_edges()` | retained adjacent mediator-to-mediator links |
+| `zentangler_sequential_terminals()` | terminal mediator-to-outcome coefficients |
+| `zentangler_sequential_diagnostics()` | sample counts, path counts, terminal selection counts, bootstrap status |
+| `summarize_sequential_zentangler()` | model, threshold, diagnostics, top path, active path, edge, and terminal summaries |
+
+By default, path evidence uses conservative refit evidence from the A-stage,
+transition links, and terminal B-stage. The terminal B-stage supports the same
+inference options as the parallel API through `b_inference`:
+
+```r
+b_inference = "debiased_lasso"          # Gaussian, and default survival dispatch
+b_inference = "debiased_logistic_lasso" # Binary outcome
+b_inference = "debiased_cox_lasso"      # Survival outcome approximation
+b_inference = "refit"                   # Active-set refit
+b_inference = "bootstrap"               # Initial refit p-values; pair with path bootstrap below
+```
+
+For uncertainty on the complete path score, request a fixed-path bootstrap:
+
+```r
+seq_fit_boot <- fit_sequential_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y",
+  path_templates = list(route = c("species", "fecal_metabolites")),
+  sis_n = 50,
+  min_abs_cor = 0.3,
+  cor_q_threshold = 0.25,
+  lambda_choice = "lambda.min",
+  b_inference = "debiased_lasso",
+  path_inference = "bootstrap_score",
+  bootstrap_repeats = 100,
+  y_family = "gaussian"
+)
+```
+
+This adds bootstrap path-score means, intervals, selection frequencies, and
+bootstrap p-values. With `path_inference = "bootstrap_score"`, those bootstrap
+p-values become the final `p_primary` used for path-level q-values.
 
 For more than two mediator layers, add more entries to `stage_views`. For
 example, `list(layer1 = "species", layer2 = "kos", layer3 = "plasma_metabolites")`
 fits `X -> layer1 -> layer2 -> layer3 -> Y` paths.
+
+When only specific biological routes should be tested, use `path_templates`.
+Zentangler will run only those user-specified routes, rather than enumerating
+all possible modality combinations. Routes with two or more modalities are
+sequential routes. One-modality routes are allowed by default, but are labeled
+as `parallel_single_view` because they represent `X -> M -> Y`, not
+mediator-to-mediator sequential mediation. When multiple routes are supplied,
+the run is labeled as `parallel_sequential` because the requested routes are
+parallel alternatives from the same exposure to the same outcome.
+
+```r
+seq_routes <- fit_parallel_sequential_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "Y",
+  path_templates = list(
+    route_1 = c("M1", "M2"),       # X -> M1 -> M2 -> Y
+    route_2 = c("M3", "M4"),       # X -> M3 -> M4 -> Y
+    route_3 = c("M1", "M2", "M3"), # X -> M1 -> M2 -> M3 -> Y
+    route_4 = c("M4")              # X -> M4 -> Y
+  ),
+  sis_n = 50,
+  cor_method = "spearman",
+  min_abs_cor = 0.3,
+  cor_q_threshold = 0.25
+)
+
+head(zentangler_sequential_paths(seq_routes), 20)
+```
+
+Sequential route fits also support binary and survival outcomes. For binary
+outcomes, use a numeric 0/1 outcome column and logistic B-stage inference:
+
+```r
+seq_binary <- fit_sequential_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = "case_status",
+  path_templates = list(route = c("species", "fecal_metabolites")),
+  sis_n = 50,
+  cor_method = "spearman",
+  min_abs_cor = 0.3,
+  cor_q_threshold = 0.25,
+  fusion_mode = "early",
+  lambda_choice = "lambda.min",
+  y_family = "binomial",
+  b_inference = "debiased_logistic_lasso"
+)
+
+head(zentangler_sequential_paths(seq_binary), 20)
+```
+
+For survival outcomes, provide time and event columns. Early and late fusion are
+supported; intermediate fusion is currently Gaussian-only.
+
+```r
+seq_survival <- fit_sequential_zentangler(
+  mae = mae,
+  x_var = "X",
+  y_var = NULL,
+  path_templates = list(route = c("species", "fecal_metabolites")),
+  sis_n = 50,
+  cor_method = "spearman",
+  min_abs_cor = 0.3,
+  cor_q_threshold = 0.25,
+  fusion_mode = "early",
+  lambda_choice = "lambda.min",
+  y_family = "survival",
+  survival_time_var = "time",
+  survival_event_var = "status",
+  b_inference = "debiased_cox_lasso"
+)
+
+head(zentangler_sequential_paths(seq_survival), 20)
+```
 
 ## Input Requirements
 
@@ -734,6 +873,7 @@ Common benchmark metrics:
 
 - `fit_multiview_parallel_zentangler()`: fit the multiview mediation model
 - `fit_sequential_zentangler()`: fit k-layer sequential mediation paths
+- `fit_parallel_sequential_zentangler()`: fit user-specified parallel route sets containing sequential and/or single-view routes
 - `zentangler_sequential_paths()`: return the sequential path table
 - `zentangler_all_mediators()`: return the full mediator table
 - `zentangler_top_mediators()`: return top-ranked mediators
