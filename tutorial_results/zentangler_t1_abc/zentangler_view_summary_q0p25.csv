@@ -1,5 +1,0 @@
-"omics","n_tested","n_screened","n_active","n_positive_score","n_negative_score","max_abs_score","min_q_primary"
-"species",805,50,2,1,1,12.7345295573786,0.0111866834291856
-"kos",3903,50,0,0,0,0,NA
-"fecal_metabolites",825,50,0,0,0,0,NA
-"plasma_metabolites",844,50,0,0,0,0,NA
