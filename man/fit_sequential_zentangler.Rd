@@ -1,12 +1,11 @@
 \name{fit_sequential_zentangler}
 \alias{fit_sequential_zentangler}
-\alias{fit_parallel_sequential_zentangler}
 \alias{zentangler_sequential_paths}
 \alias{zentangler_sequential_edges}
 \alias{zentangler_sequential_terminals}
 \alias{zentangler_sequential_diagnostics}
 \alias{summarize_sequential_zentangler}
-\title{Fit sequential and parallel-sequential Zentangler routes}
+\title{Fit sequential Zentangler routes}
 \usage{
 fit_sequential_zentangler(
   mae,
@@ -14,49 +13,6 @@ fit_sequential_zentangler(
   y_var = NULL,
   stage_views = NULL,
   path_templates = NULL,
-  allow_parallel_routes = FALSE,
-  view_names = NULL,
-  assay_names = NULL,
-  covariates = NULL,
-  y_family = c("gaussian", "binomial", "survival"),
-  survival_time_var = NULL,
-  survival_event_var = NULL,
-  sis_n = 50L,
-  sis_rank = c("abs_a", "pvalue"),
-  screen_method = c("sis", "none"),
-  cor_method = c("spearman", "pearson"),
-  min_abs_cor = 0.3,
-  cor_q_threshold = 0.25,
-  cor_fdr_method = c("BH", "BY"),
-  residualize_links = TRUE,
-  max_links_per_transition = 5000L,
-  max_paths = 10000L,
-  fusion_mode = c("early", "intermediate", "late"),
-  lambda_choice = c("lambda.1se", "lambda.min"),
-  glmnet_alpha = 1,
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
-  debias_max_targets = 200L,
-  coop_rho = 0.2,
-  coop_maxit = 100,
-  coop_tol = 1e-04,
-  path_inference = c("model_based", "bootstrap_score"),
-  bootstrap_repeats = 0L,
-  bootstrap_ci_level = 0.95,
-  bootstrap_seed = seed + 10000L,
-  bootstrap_id = NULL,
-  fdr_method = c("BH", "BY"),
-  fdr_scope = c("global"),
-  seed = 1,
-  duplicate_primary = c("mean", "first"),
-  fill_nonfinite_zero = FALSE,
-  .internal_route_set = FALSE
-)
-
-fit_parallel_sequential_zentangler(
-  mae,
-  x_var,
-  y_var = NULL,
-  path_templates,
   view_names = NULL,
   assay_names = NULL,
   covariates = NULL,
@@ -108,8 +64,7 @@ summarize_sequential_zentangler(fit, q_threshold = 0.25)
 \item{x_var}{Exposure column in \code{colData(mae)}.}
 \item{y_var}{Outcome column in \code{colData(mae)} for Gaussian/binomial outcomes.}
 \item{stage_views}{List of ordered mediator layers. Each element is a character vector of experiment/view names. If \code{NULL}, \code{view_names} order is used as one view per layer.}
-\item{path_templates}{For \code{fit_sequential_zentangler()}, an optional one-route list such as \code{list(route = c("species", "fecal_metabolites"))}. For \code{fit_parallel_sequential_zentangler()}, a required list of explicit routes.}
-\item{allow_parallel_routes}{Internal compatibility option. The public sequential API leaves this \code{FALSE}; use \code{fit_parallel_sequential_zentangler()} for one-view routes or mixed route sets.}
+\item{path_templates}{Optional one-route list such as \code{list(route = c("species", "fecal_metabolites"))}. The route must contain at least two modalities. Run multiple routes in separate calls.}
 \item{view_names}{Optional subset/order of MAE experiments.}
 \item{assay_names}{Optional assay names passed to MAE extraction.}
 \item{covariates}{Optional phenotype covariates.}
@@ -142,13 +97,11 @@ summarize_sequential_zentangler(fit, q_threshold = 0.25)
 \item{fdr_scope}{Currently \code{"global"} only for path-level q-values.}
 \item{seed}{Random seed.}
 \item{duplicate_primary, fill_nonfinite_zero}{MAE extraction options.}
-\item{.internal_route_set}{Internal flag used by \code{fit_parallel_sequential_zentangler()}; not intended for direct use.}
-\item{fit}{Output from \code{fit_sequential_zentangler()} or \code{fit_parallel_sequential_zentangler()}.}
+\item{fit}{Output from \code{fit_sequential_zentangler()}.}
 }
 \description{
-Fits sequential mediation routes such as \code{X -> M1 -> M2 -> ... -> Mk -> Y}
-or user-specified parallel route sets containing sequential and/or one-view
-parallel routes. The first layer is screened by association with the exposure.
+Fits one sequential mediation route such as \code{X -> M1 -> M2 -> ... -> Mk -> Y}.
+The first layer is screened by association with the exposure.
 Adjacent mediator layers are screened by mediator-to-mediator correlation, then
 retained links are refit by regression to estimate directed link coefficients.
 }
@@ -169,12 +122,11 @@ frequencies, and bootstrap p-values. Setting
 the final \code{p_primary}; otherwise they are reported alongside the
 model-based path evidence.
 
-Zentangler distinguishes three mediation model classes. The existing
-\code{fit_multiview_parallel_zentangler()} API fits a \code{parallel} model.
-\code{fit_sequential_zentangler()} with one multi-view route fits a
-\code{sequential} model. \code{fit_parallel_sequential_zentangler()} runs
-multiple user-specified routes in parallel, including mixed multi-view
-sequential routes and one-view parallel routes.
+Zentangler distinguishes pure parallel mediation from one-route sequential
+mediation. Use \code{fit_multiview_parallel_zentangler()} for \code{X -> M -> Y}
+models without mediator-to-mediator links, and use
+\code{fit_sequential_zentangler()} for an explicit ordered route with at least
+two mediator modalities.
 
 The terminal mediator-to-outcome stage uses \code{fusion_mode}. Early fusion
 combines terminal mediators before fitting one penalized outcome model.
@@ -182,8 +134,8 @@ Intermediate fusion applies the package's cooperative learner across terminal
 views and currently requires Gaussian outcomes with at least two terminal
 views. Late fusion fits view-level terminal models and combines their scores.
 
-Sequential and parallel-sequential APIs support Gaussian, binomial, and
-survival outcomes. For binomial outcomes, \code{y_var} should name a numeric
+The sequential API supports Gaussian, binomial, and survival outcomes. For
+binomial outcomes, \code{y_var} should name a numeric
 0/1 outcome and \code{b_inference = "debiased_logistic_lasso"} requests the
 logistic B-stage approximation. For survival outcomes, set
 \code{y_family = "survival"}, provide \code{survival_time_var} and
@@ -216,17 +168,6 @@ fit_seq <- fit_sequential_zentangler(
 )
 
 head(zentangler_sequential_paths(fit_seq))
-
-fit_routes <- fit_parallel_sequential_zentangler(
-  mae,
-  x_var = "A",
-  y_var = "Y",
-  path_templates = list(
-    microbe_to_metabolite = c("species", "fecal_metabolites"),
-    kos_to_plasma = c("kos", "plasma_metabolites"),
-    direct_plasma = c("plasma_metabolites")
-  )
-)
 
 fit_binary <- fit_sequential_zentangler(
   mae,

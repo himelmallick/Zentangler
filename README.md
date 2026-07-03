@@ -95,13 +95,12 @@ The standard Zentangler API is a parallel mediation model:
 X -> M_j -> Y
 ```
 
-Zentangler now separates three model classes:
+Zentangler separates two model classes:
 
 | Model class | Meaning | API |
 |---|---|---|
 | `parallel` | One or more mediators modeled as `X -> M -> Y` without mediator-to-mediator links | `fit_multiview_parallel_zentangler()` |
 | `sequential` | One explicit ordered route, such as `X -> M1 -> M2 -> Y` | `fit_sequential_zentangler()` |
-| `parallel_sequential` | A user-specified set of routes run in parallel, where each route may be sequential or single-view | `fit_parallel_sequential_zentangler()` |
 
 The k-layer sequential route form is:
 
@@ -199,25 +198,19 @@ For more than two mediator layers, add more entries to `stage_views`. For
 example, `list(layer1 = "species", layer2 = "kos", layer3 = "plasma_metabolites")`
 fits `X -> layer1 -> layer2 -> layer3 -> Y` paths.
 
-When only specific biological routes should be tested, use `path_templates`.
-Zentangler will run only those user-specified routes, rather than enumerating
-all possible modality combinations. Routes with two or more modalities are
-sequential routes. One-modality routes are allowed by default, but are labeled
-as `parallel_single_view` because they represent `X -> M -> Y`, not
-mediator-to-mediator sequential mediation. When multiple routes are supplied,
-the run is labeled as `parallel_sequential` because the requested routes are
-parallel alternatives from the same exposure to the same outcome.
+When only one specific biological route should be tested, use `path_templates`.
+Zentangler will run only that user-specified route, rather than enumerating all
+possible modality combinations. The route must contain at least two modalities.
+Run additional routes as separate sequential fits, and use
+`fit_multiview_parallel_zentangler()` for pure `X -> M -> Y` mediation.
 
 ```r
-seq_routes <- fit_parallel_sequential_zentangler(
+seq_route <- fit_sequential_zentangler(
   mae = mae,
   x_var = "X",
   y_var = "Y",
   path_templates = list(
-    route_1 = c("M1", "M2"),       # X -> M1 -> M2 -> Y
-    route_2 = c("M3", "M4"),       # X -> M3 -> M4 -> Y
-    route_3 = c("M1", "M2", "M3"), # X -> M1 -> M2 -> M3 -> Y
-    route_4 = c("M4")              # X -> M4 -> Y
+    route_1 = c("M1", "M2", "M3") # X -> M1 -> M2 -> M3 -> Y
   ),
   sis_n = 50,
   cor_method = "spearman",
@@ -225,7 +218,7 @@ seq_routes <- fit_parallel_sequential_zentangler(
   cor_q_threshold = 0.25
 )
 
-head(zentangler_sequential_paths(seq_routes), 20)
+head(zentangler_sequential_paths(seq_route), 20)
 ```
 
 Sequential route fits also support binary and survival outcomes. For binary
@@ -873,7 +866,6 @@ Common benchmark metrics:
 
 - `fit_multiview_parallel_zentangler()`: fit the multiview mediation model
 - `fit_sequential_zentangler()`: fit k-layer sequential mediation paths
-- `fit_parallel_sequential_zentangler()`: fit user-specified parallel route sets containing sequential and/or single-view routes
 - `zentangler_sequential_paths()`: return the sequential path table
 - `zentangler_all_mediators()`: return the full mediator table
 - `zentangler_top_mediators()`: return top-ranked mediators

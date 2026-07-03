@@ -1,5 +1,4 @@
 export(fit_multiview_parallel_zentangler)
-export(fit_parallel_sequential_zentangler)
 export(fit_sequential_zentangler)
 export(gen_simmba)
 export(run_intersim_zentangler)

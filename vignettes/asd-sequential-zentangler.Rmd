@@ -1,8 +1,8 @@
 ---
-title: "ASD multi-omics tutorial: parallel, sequential, and mixed Zentangler"
+title: "ASD multi-omics tutorial: parallel and sequential Zentangler"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{ASD multi-omics tutorial: parallel, sequential, and mixed Zentangler}
+  %\VignetteIndexEntry{ASD multi-omics tutorial: parallel and sequential Zentangler}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -18,13 +18,11 @@ knitr::opts_chunk$set(
 
 # Overview
 
-This tutorial runs the three Zentangler mediation APIs on the ASD multi-omics
+This tutorial runs the two Zentangler mediation APIs on the ASD multi-omics
 example data:
 
 1. `fit_multiview_parallel_zentangler()` for pure parallel mediation.
 2. `fit_sequential_zentangler()` for one explicit sequential route.
-3. `fit_parallel_sequential_zentangler()` for a user-specified set of routes
-   that may contain both sequential and one-view parallel routes.
 
 The ASD example uses a time contrast as the exposure:
 
@@ -128,10 +126,10 @@ sequential_fit <- fit_sequential_zentangler(
   path_templates = list(
     species_to_fecal = c("species", "fecal_metabolites")
   ),
-  sis_n = 40,
+  sis_n = 25,
   cor_method = "spearman",
   min_abs_cor = 0.15,
-  cor_q_threshold = 0.75,
+  cor_q_threshold = 0.5,
   fusion_mode = "late",
   lambda_choice = "lambda.min",
   y_family = "gaussian",
@@ -146,55 +144,146 @@ head(zentangler_sequential_edges(sequential_fit), 20)
 head(zentangler_sequential_terminals(sequential_fit), 20)
 ```
 
-# 3. Parallel Plus Sequential Route Set
+# 3. Additional Sequential Route Scenarios
 
-The mixed API lets you specify exactly which biological routes to test. It does
-not enumerate all possible combinations.
-
-The example below runs three routes in parallel:
-
-```text
-X -> species -> fecal_metabolites -> Y
-X -> kos -> plasma_metabolites -> Y
-X -> plasma_metabolites -> Y
-```
-
-The first two are sequential routes. The third is a one-view parallel route
-included in the same route set.
+The ASD example has four modalities:
 
 ```{r}
-mixed_fit <- fit_parallel_sequential_zentangler(
+names(asd$omics)
+```
+
+Because the sequential API fits one explicit ordered route at a time, different
+biological hypotheses are run as separate fits. The helper below keeps the call
+consistent across scenarios.
+
+```{r}
+run_asd_sequential_route <- function(route_name, route_views, sis_n = 25) {
+  fit <- fit_sequential_zentangler(
+    mae_t1_abc,
+    x_var = "X",
+    y_var = "Y",
+    path_templates = stats::setNames(list(route_views), route_name),
+    sis_n = sis_n,
+    cor_method = "spearman",
+    min_abs_cor = 0.15,
+    cor_q_threshold = 0.5,
+    fusion_mode = "late",
+    lambda_choice = "lambda.min",
+    glmnet_alpha = 0.5,
+    y_family = "gaussian",
+    seed = 1
+  )
+
+  paths <- zentangler_sequential_paths(fit)
+  if (nrow(paths) > 0) {
+    paths$route_name <- route_name
+    paths$view_route <- paste(route_views, collapse = " -> ")
+    paths <- paths[
+      ,
+      c("route_name", "view_route", setdiff(names(paths), c("route_name", "view_route"))),
+      drop = FALSE
+    ]
+  }
+
+  list(
+    fit = fit,
+    paths = paths,
+    model_summary = summarize_sequential_zentangler(fit)$model_summary
+  )
+}
+```
+
+Here are several two-modality and three-modality routes using the same four ASD
+views.
+
+```{r}
+asd_route_scenarios <- list(
+  species_to_kos = c("species", "kos"),
+  species_to_fecal = c("species", "fecal_metabolites"),
+  species_to_plasma = c("species", "plasma_metabolites"),
+  kos_to_fecal = c("kos", "fecal_metabolites"),
+  kos_to_plasma = c("kos", "plasma_metabolites"),
+  fecal_to_plasma = c("fecal_metabolites", "plasma_metabolites"),
+  species_to_kos_to_fecal = c("species", "kos", "fecal_metabolites"),
+  species_to_kos_to_plasma = c("species", "kos", "plasma_metabolites")
+)
+
+asd_route_fits <- Map(
+  run_asd_sequential_route,
+  names(asd_route_scenarios),
+  asd_route_scenarios
+)
+
+route_model_summaries <- do.call(
+  rbind,
+  lapply(names(asd_route_fits), function(route_name) {
+    out <- asd_route_fits[[route_name]]$model_summary
+    out$route_name <- route_name
+    out$view_route <- paste(asd_route_scenarios[[route_name]], collapse = " -> ")
+    out[, c("route_name", "view_route", setdiff(names(out), c("route_name", "view_route"))), drop = FALSE]
+  })
+)
+
+route_path_list <- Filter(
+  function(x) is.data.frame(x) && nrow(x) > 0,
+  lapply(asd_route_fits, `[[`, "paths")
+)
+route_paths <- if (length(route_path_list) > 0) do.call(rbind, route_path_list) else data.frame()
+
+route_model_summaries
+if (nrow(route_paths) > 0) {
+  head(route_paths[order(route_paths$q_primary, route_paths$p_primary), ], 20)
+} else {
+  route_paths
+}
+```
+
+You can also define broader sequential layers instead of one named view per
+layer. This example treats `species` and `kos` as a microbiome layer and fecal
+and plasma metabolites as a metabolite layer. The runnable example below uses
+late fusion. If the retained terminal mediators span both metabolite views, you
+can switch `fusion_mode` to `"intermediate"` to try the cooperative terminal
+fusion mode.
+
+```{r}
+grouped_layer_fit <- fit_sequential_zentangler(
   mae_t1_abc,
   x_var = "X",
   y_var = "Y",
-  path_templates = list(
-    species_to_fecal = c("species", "fecal_metabolites"),
-    kos_to_plasma = c("kos", "plasma_metabolites"),
-    plasma_direct = c("plasma_metabolites")
+  stage_views = list(
+    microbiome = c("species", "kos"),
+    metabolites = c("fecal_metabolites", "plasma_metabolites")
   ),
-  sis_n = 40,
+  sis_n = 12,
   cor_method = "spearman",
   min_abs_cor = 0.15,
   cor_q_threshold = 0.75,
-  fusion_mode = "early",
+  fusion_mode = "late",
   lambda_choice = "lambda.min",
+  glmnet_alpha = 0.5,
+  coop_rho = 0.2,
   y_family = "gaussian",
   seed = 1
 )
 
-mixed_paths <- zentangler_sequential_paths(mixed_fit)
-mixed_fit$settings$route_set_type
-table(mixed_paths$route_type)
-head(mixed_paths, 20)
-summarize_sequential_zentangler(mixed_fit)$threshold_summary
+grouped_layer_paths <- zentangler_sequential_paths(grouped_layer_fit)
+summarize_sequential_zentangler(grouped_layer_fit)$model_summary
+if (nrow(grouped_layer_paths) > 0) {
+  table(grouped_layer_paths$terminal_view)
+  head(grouped_layer_paths[order(grouped_layer_paths$q_primary, grouped_layer_paths$p_primary), ], 20)
+} else {
+  grouped_layer_paths
+}
 ```
 
-The sequential APIs now expose the same kind of layers as the parallel API:
+# 4. Sequential Diagnostics and Bootstrap
+
+The sequential API exposes the same kind of layers as the parallel API:
 complete paths, retained mediator-to-mediator edges, terminal B-stage effects,
 and run diagnostics.
 
 ```{r}
-zentangler_sequential_diagnostics(mixed_fit)
+zentangler_sequential_diagnostics(sequential_fit)
 ```
 
 For uncertainty on the full path score, use the fixed-path bootstrap. Increase
@@ -202,13 +291,12 @@ For uncertainty on the full path score, use the fixed-path bootstrap. Increase
 tutorial run.
 
 ```{r}
-mixed_boot_fit <- fit_parallel_sequential_zentangler(
+sequential_boot_fit <- fit_sequential_zentangler(
   mae_t1_abc,
   x_var = "X",
   y_var = "Y",
   path_templates = list(
-    species_to_fecal = c("species", "fecal_metabolites"),
-    plasma_direct = c("plasma_metabolites")
+    species_to_fecal = c("species", "fecal_metabolites")
   ),
   sis_n = 12,
   cor_method = "spearman",
@@ -223,105 +311,7 @@ mixed_boot_fit <- fit_parallel_sequential_zentangler(
   seed = 1
 )
 
-head(zentangler_sequential_paths(mixed_boot_fit), 20)
-```
-
-# Binary and Survival Sequential Outcomes
-
-The same route APIs can be used with binary and survival outcomes. The ASD
-example data here use continuous symptom scores, so the following chunks create
-small derived outcomes only to demonstrate the calls.
-
-```{r}
-mae_binary_demo <- mae_t1_abc
-colData(mae_binary_demo)$Y_binary <- as.numeric(
-  colData(mae_binary_demo)$Y > stats::median(colData(mae_binary_demo)$Y, na.rm = TRUE)
-)
-
-binary_seq_fit <- fit_sequential_zentangler(
-  mae_binary_demo,
-  x_var = "X",
-  y_var = "Y_binary",
-  path_templates = list(species_to_fecal = c("species", "fecal_metabolites")),
-  sis_n = 20,
-  cor_method = "spearman",
-  min_abs_cor = 0.15,
-  cor_q_threshold = 0.75,
-  fusion_mode = "early",
-  lambda_choice = "lambda.min",
-  y_family = "binomial",
-  b_inference = "debiased_logistic_lasso",
-  seed = 1
-)
-
-head(zentangler_sequential_paths(binary_seq_fit), 20)
-unique(zentangler_sequential_terminals(binary_seq_fit)$b_inference_method)
-```
-
-Survival outcomes use a time column and a 0/1 event column. Intermediate fusion
-is currently Gaussian-only, so use early or late fusion for survival route fits.
-
-```{r}
-mae_survival_demo <- mae_t1_abc
-set.seed(1)
-colData(mae_survival_demo)$time <- seq_len(ncol(mae_survival_demo)) + stats::runif(ncol(mae_survival_demo))
-colData(mae_survival_demo)$status <- as.numeric(
-  colData(mae_survival_demo)$Y > stats::median(colData(mae_survival_demo)$Y, na.rm = TRUE)
-)
-
-survival_seq_fit <- fit_sequential_zentangler(
-  mae_survival_demo,
-  x_var = "X",
-  y_var = NULL,
-  path_templates = list(species_to_fecal = c("species", "fecal_metabolites")),
-  sis_n = 20,
-  cor_method = "spearman",
-  min_abs_cor = 0.15,
-  cor_q_threshold = 0.75,
-  fusion_mode = "early",
-  lambda_choice = "lambda.min",
-  y_family = "survival",
-  survival_time_var = "time",
-  survival_event_var = "status",
-  b_inference = "debiased_cox_lasso",
-  seed = 1
-)
-
-head(zentangler_sequential_paths(survival_seq_fit), 20)
-unique(zentangler_sequential_terminals(survival_seq_fit)$b_inference_method)
-```
-
-# Mixed Routes With Intermediate Fusion
-
-Use `fusion_mode = "intermediate"` when the terminal mediator-to-outcome stage
-should use Zentangler's cooperative/intermediate learner. This requires at least
-two terminal views across the requested route set. In the example below, the
-terminal views are `fecal_metabolites` and `plasma_metabolites`.
-
-```{r}
-mixed_intermediate_fit <- fit_parallel_sequential_zentangler(
-  mae_t1_abc,
-  x_var = "X",
-  y_var = "Y",
-  path_templates = list(
-    species_to_fecal = c("species", "fecal_metabolites"),
-    kos_to_plasma = c("kos", "plasma_metabolites")
-  ),
-  sis_n = 8,
-  cor_method = "spearman",
-  min_abs_cor = 0.15,
-  cor_q_threshold = 0.75,
-  fusion_mode = "intermediate",
-  lambda_choice = "lambda.min",
-  coop_rho = 0.2,
-  y_family = "gaussian",
-  seed = 1
-)
-
-mixed_intermediate_paths <- zentangler_sequential_paths(mixed_intermediate_fit)
-mixed_intermediate_fit$settings$route_set_type
-table(mixed_intermediate_paths$terminal_view)
-head(mixed_intermediate_paths, 20)
+head(zentangler_sequential_paths(sequential_boot_fit), 20)
 ```
 
 # Save Results
@@ -343,14 +333,20 @@ write.csv(
 )
 
 write.csv(
-  mixed_paths,
-  file.path(out_dir, "parallel_sequential_paths.csv"),
+  route_model_summaries,
+  file.path(out_dir, "sequential_route_scenario_model_summaries.csv"),
   row.names = FALSE
 )
 
 write.csv(
-  mixed_intermediate_paths,
-  file.path(out_dir, "parallel_sequential_intermediate_paths.csv"),
+  route_paths,
+  file.path(out_dir, "sequential_route_scenario_paths.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  grouped_layer_paths,
+  file.path(out_dir, "sequential_grouped_microbiome_to_metabolite_paths.csv"),
   row.names = FALSE
 )
 
@@ -358,8 +354,9 @@ saveRDS(
   list(
     parallel_fit = parallel_fit,
     sequential_fit = sequential_fit,
-    mixed_fit = mixed_fit,
-    mixed_intermediate_fit = mixed_intermediate_fit
+    asd_route_fits = asd_route_fits,
+    grouped_layer_fit = grouped_layer_fit,
+    sequential_boot_fit = sequential_boot_fit
   ),
   file.path(out_dir, "asd_sequential_zentangler_fits.rds")
 )
@@ -367,14 +364,11 @@ saveRDS(
 
 # Interpreting The Output
 
-For sequential and mixed route sets, the main path table includes:
+For sequential route fits, the main path table includes:
 
 | Column | Meaning |
 |---|---|
-| `route_set_type` | `sequential` or `parallel_sequential` |
-| `path_template` | user-specified route name |
-| `view_route` | modality-level route |
-| `route_type` | `sequential` or `parallel_single_view` |
+| `route_set_type` | `sequential` |
 | `mediator_path` | feature-level mediator path |
 | `a` | exposure-to-first-mediator coefficient |
 | `d_product` | product of mediator-to-mediator link coefficients |
