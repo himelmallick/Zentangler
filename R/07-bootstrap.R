@@ -200,7 +200,7 @@ bootstrap_multiview_fit <- function(
       NULL
     }
 
-    b_inference_b <- if (identical(b_inference, "bootstrap")) "refit" else b_inference
+    b_inference_b <- "debiased"
     fit_b <- try(
       fit_multiview_parallel_zentangler_blocks(
         blocks = bt$blocks,
@@ -230,6 +230,7 @@ bootstrap_multiview_fit <- function(
         fdr_scope = fdr_scope,
         primary_inference = "model_based",
         b_inference = b_inference_b,
+        causal_inference = "none",
         debias_max_targets = debias_max_targets,
         coop_rho = coop_rho,
         coop_maxit = coop_maxit,

@@ -360,15 +360,15 @@ fit_surv <- fit_multiview_parallel_zentangler(
   survival_time_var = "time",
   survival_event_var = "status",
   fusion_mode = "early",
-  b_inference = "refit"
+  b_inference = "debiased"
 )
 ```
 
 Survival outcomes currently support early and late fusion. The B-stage can use
-`b_inference = "refit"`, `b_inference = "bootstrap"`, or
-`b_inference = "debiased_cox_lasso"`. The Cox de-biased option currently uses a
-Cox active-set Wald approximation after sparse selection, so bootstrap is the
-recommended uncertainty route when resampling is affordable.
+`b_inference = "debiased"` or `b_inference = "bootstrap"`. For survival
+outcomes, the de-biased path currently uses a Cox active-set Wald approximation
+after sparse selection, so bootstrap is the recommended uncertainty route when
+resampling is affordable.
 
 ## Early fusion
 
@@ -440,32 +440,20 @@ feature counts.
 
 # Stage 4: B-path inference
 
-The default B-stage inference is HIMA-style de-biased lasso inference:
+The default B-stage inference is the package's de-biased sparse B-stage
+approximation:
 
 ```{r}
 fit <- fit_multiview_parallel_zentangler(
   mae = mae,
   x_var = "X",
   y_var = "Y",
-  b_inference = "debiased_lasso"
+  b_inference = "debiased"
 )
 ```
 
 The purpose is to obtain approximate p-values for mediator B-path coefficients
-after sparse model fitting. The package also includes a refit option:
-
-```{r}
-fit <- fit_multiview_parallel_zentangler(
-  mae = mae,
-  x_var = "X",
-  y_var = "Y",
-  b_inference = "refit"
-)
-```
-
-The refit option uses the selected active set and computes ordinary refit-based
-p-values. This is simpler to explain, but can be less stable if the selected
-active set is too large relative to sample size.
+after sparse model fitting.
 
 Bootstrap refits can also be used for B-path inference:
 
@@ -481,7 +469,8 @@ fit <- fit_multiview_parallel_zentangler(
 
 With this option, `p_b` is replaced by the bootstrap B-path p-value before
 `p_primary` and the final q-values are recomputed. The table also retains
-`p_b_model_based`, `p_b_bootstrap`, and B-path bootstrap interval columns.
+`p_b_initial`, `p_b_model_based`, `p_b_bootstrap`, and B-path bootstrap
+interval columns.
 
 # Stage 5: Combining mediator evidence
 
@@ -724,7 +713,7 @@ binary_fit <- fit_multiview_parallel_zentangler(
   y_var = "Y",
   y_family = "binomial",
   fusion_mode = "early",
-  b_inference = "debiased_logistic_lasso",
+  b_inference = "debiased",
   sis_n = 50,
   screen_method = "sis",
   seed = 1
@@ -734,8 +723,8 @@ head(zentangler_all_mediators(binary_fit))
 ```
 
 Survival simulations use `outcome.type = "survival"` and store the outcome as
-`time` plus 0/1 `status`. For quick checks without bootstrap, use Cox refit or
-the Cox lasso B-stage approximation:
+`time` plus 0/1 `status`. For quick checks without bootstrap, use the
+survival-aware de-biased B-stage approximation:
 
 ```{r}
 sim_surv <- gen_simmba(
@@ -746,34 +735,20 @@ sim_surv <- gen_simmba(
   seed = 1
 )
 
-surv_fit_refit <- fit_multiview_parallel_zentangler(
+surv_fit <- fit_multiview_parallel_zentangler(
   sim_surv$trainMae[[1]],
   x_var = "A",
   y_family = "survival",
   survival_time_var = "time",
   survival_event_var = "status",
   fusion_mode = "early",
-  b_inference = "refit",
+  b_inference = "debiased",
   sis_n = 50,
   screen_method = "sis",
   seed = 1
 )
 
-surv_fit_cox <- fit_multiview_parallel_zentangler(
-  sim_surv$trainMae[[1]],
-  x_var = "A",
-  y_family = "survival",
-  survival_time_var = "time",
-  survival_event_var = "status",
-  fusion_mode = "early",
-  b_inference = "debiased_cox_lasso",
-  sis_n = 50,
-  screen_method = "sis",
-  seed = 1
-)
-
-head(zentangler_all_mediators(surv_fit_refit))
-head(zentangler_all_mediators(surv_fit_cox))
+head(zentangler_all_mediators(surv_fit))
 ```
 
 The simulation wrapper returns:

@@ -296,6 +296,7 @@ zentangler_bootstrap_sequential_paths <- function(
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  causal_inference = c("none", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -303,12 +304,15 @@ zentangler_bootstrap_sequential_paths <- function(
   repeats = 0L,
   ci_level = 0.95,
   seed = 10001L,
-  bootstrap_id = NULL
+  bootstrap_id = NULL,
+  effect_x0 = NULL,
+  effect_x1 = NULL
 ) {
   y_family <- match.arg(y_family)
   fusion_mode <- match.arg(fusion_mode)
   lambda_choice <- match.arg(lambda_choice)
   b_inference <- match.arg(b_inference)
+  causal_inference <- match.arg(causal_inference)
   debias_max_targets <- max(1L, as.integer(debias_max_targets))
   repeats <- max(0L, as.integer(repeats))
   if (repeats < 1L || is.null(paths) || nrow(paths) == 0L) return(NULL)
@@ -317,6 +321,7 @@ zentangler_bootstrap_sequential_paths <- function(
   key_ref <- as.character(paths$key_path)
   score_mat <- matrix(NA_real_, nrow = repeats, ncol = length(key_ref), dimnames = list(NULL, key_ref))
   active_mat <- matrix(NA_real_, nrow = repeats, ncol = length(key_ref), dimnames = list(NULL, key_ref))
+  effect_rows <- list()
   failures <- character(0)
 
   pseudo_blocks <- list(.sequential = matrix(0, nrow = nrow(pheno_df), ncol = 1L, dimnames = list(rownames(pheno_df), ".dummy")))
@@ -400,11 +405,48 @@ zentangler_bootstrap_sequential_paths <- function(
       score_mat[b, i] <- score
       active_mat[b, i] <- as.numeric(is.finite(b_val) && b_val != 0)
     }
+    if (identical(causal_inference, "bootstrap")) {
+      data_by_key_b <- lapply(data_by_key, function(x) x[idx])
+      paths_b <- paths
+      paths_b$sequential_score <- score_mat[b, ]
+      term_b <- match(paths_b$terminal_key, terminal_effects$terminal_key)
+      if ("terminal_key" %in% colnames(paths_b) && any(!is.na(term_b))) {
+        paths_b$b[!is.na(term_b)] <- terminal_effects$b[term_b[!is.na(term_b)]]
+        paths_b$p_b[!is.na(term_b)] <- terminal_effects$p_b[term_b[!is.na(term_b)]]
+      }
+      eff_b <- try(
+        compute_effect_decomposition_sequential(
+          sequential_paths = paths_b,
+          Y = Y_b,
+          X = X_b,
+          data_by_key = data_by_key_b,
+          C = C_b,
+          y_family = y_family,
+          x0 = effect_x0,
+          x1 = effect_x1
+        ),
+        silent = TRUE
+      )
+      if (inherits(eff_b, "try-error")) {
+        failures <- c(failures, paste0("bootstrap_", b, "_effects: ", conditionMessage(attr(eff_b, "condition"))))
+      } else {
+        effect_rows[[length(effect_rows) + 1L]] <- eff_b
+      }
+    }
+  }
+
+  effect_boot <- if (length(effect_rows) > 0L) {
+    out <- do.call(rbind, effect_rows)
+    rownames(out) <- NULL
+    out
+  } else {
+    data.frame()
   }
 
   list(
     score_matrix = score_mat,
     active_matrix = active_mat,
+    effect_decomposition = effect_boot,
     ci_level = ci_level,
     repeats_requested = repeats,
     repeats_successful = sum(rowSums(is.finite(score_mat)) > 0L),
@@ -608,6 +650,11 @@ zentangler_extend_paths <- function(paths, links, max_paths = 10000L) {
 #' @param bootstrap_ci_level Bootstrap confidence level.
 #' @param bootstrap_seed Bootstrap random seed.
 #' @param bootstrap_id Optional phenotype column used for cluster bootstrap.
+#' @param causal_inference Optional causal-effect uncertainty mode. Use
+#'   `"bootstrap"` to add bootstrap summaries for direct, indirect, and total
+#'   sequential effects.
+#' @param effect_x0,effect_x1 Optional exposure contrast used for sequential
+#'   causal effect summaries.
 #' @param duplicate_primary,fill_nonfinite_zero MAE extraction options.
 #'
 #' @return A list with settings, transition links, terminal effects, and
@@ -648,6 +695,9 @@ fit_sequential_zentangler <- function(
   bootstrap_ci_level = 0.95,
   bootstrap_seed = seed + 10000L,
   bootstrap_id = NULL,
+  causal_inference = c("none", "bootstrap"),
+  effect_x0 = NULL,
+  effect_x1 = NULL,
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global"),
   seed = 1,
@@ -669,6 +719,7 @@ fit_sequential_zentangler <- function(
   path_inference <- validate_sequential_path_inference(path_inference)
   bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
   bootstrap_ci_level <- as.numeric(bootstrap_ci_level)
+  causal_inference <- match.arg(causal_inference)
   fdr_method <- validate_fdr_method(fdr_method)
   fdr_scope <- match.arg(fdr_scope)
   set.seed(seed)
@@ -824,6 +875,8 @@ fit_sequential_zentangler <- function(
   }
 
   bootstrap <- NULL
+  effect_decomposition <- data.frame()
+  causal_stage <- list()
   if (length(paths) == 0L) {
     sequential_paths <- data.frame()
     terminal_effects <- data.frame()
@@ -902,6 +955,16 @@ fit_sequential_zentangler <- function(
     sequential_paths <- do.call(rbind, path_rows)
     sequential_paths$q_primary_global <- stats::p.adjust(sequential_paths$p_primary, method = fdr_method)
     sequential_paths$q_primary <- sequential_paths$q_primary_global
+    effect_decomposition <- compute_effect_decomposition_sequential(
+      sequential_paths = sequential_paths,
+      Y = Y,
+      X = X,
+      data_by_key = data_by_key,
+      C = C,
+      y_family = y_family,
+      x0 = effect_x0,
+      x1 = effect_x1
+    )
     bootstrap <- NULL
     if (bootstrap_repeats > 0L) {
       bootstrap <- zentangler_bootstrap_sequential_paths(
@@ -916,6 +979,7 @@ fit_sequential_zentangler <- function(
         lambda_choice = lambda_choice,
         glmnet_alpha = glmnet_alpha,
         b_inference = b_inference,
+        causal_inference = causal_inference,
         debias_max_targets = debias_max_targets,
         coop_rho = coop_rho,
         coop_maxit = coop_maxit,
@@ -923,7 +987,9 @@ fit_sequential_zentangler <- function(
         repeats = bootstrap_repeats,
         ci_level = bootstrap_ci_level,
         seed = bootstrap_seed,
-        bootstrap_id = bootstrap_id
+        bootstrap_id = bootstrap_id,
+        effect_x0 = effect_x0,
+        effect_x1 = effect_x1
       )
       sequential_paths <- zentangler_add_sequential_bootstrap_columns(
         sequential_paths,
@@ -931,11 +997,24 @@ fit_sequential_zentangler <- function(
         fdr_method = fdr_method,
         use_primary = identical(path_inference, "bootstrap_score")
       )
+      if (identical(causal_inference, "bootstrap")) {
+        effect_decomposition <- add_effect_bootstrap_columns(
+          effect_decomposition = effect_decomposition,
+          effect_boot = bootstrap$effect_decomposition,
+          ci_level = bootstrap_ci_level
+        )
+      }
     } else if (identical(path_inference, "bootstrap_score")) {
       warning("path_inference='bootstrap_score' requires bootstrap_repeats > 0; using model-based path p-values.")
     }
     sequential_paths <- sequential_paths[order(sequential_paths$abs_sequential_score, decreasing = TRUE), , drop = FALSE]
     rownames(sequential_paths) <- NULL
+    causal_stage <- build_causal_stage_summary(
+      effect_decomposition = effect_decomposition,
+      combined_mediators = sequential_paths,
+      causal_inference = causal_inference,
+      bootstrap = bootstrap
+    )
   }
 
   end_time <- Sys.time()
@@ -972,6 +1051,14 @@ fit_sequential_zentangler <- function(
       bootstrap_ci_level = bootstrap_ci_level,
       bootstrap_seed = bootstrap_seed,
       bootstrap_id = bootstrap_id,
+      causal_inference = causal_inference,
+      effect_x0 = effect_decomposition$x0 %||% effect_x0,
+      effect_x1 = effect_decomposition$x1 %||% effect_x1,
+      effect_method = effect_decomposition$effect_method %||% NA_character_,
+      effect_scale = effect_decomposition$effect_scale %||% NA_character_,
+      effects_summary = if (nrow(effect_decomposition) > 0L) as.list(effect_decomposition[1, , drop = FALSE]) else list(),
+      causal_stage = causal_stage$stage %||% NA_character_,
+      causal_stage_method = causal_stage$stage_method %||% NA_character_,
       fdr_method = fdr_method,
       fdr_scope = fdr_scope
     ),
@@ -998,6 +1085,10 @@ fit_sequential_zentangler <- function(
     terminal_effects = terminal_effects,
     sequential_paths = sequential_paths,
     paths = sequential_paths,
+    causal_stage = causal_stage,
+    effects = effect_decomposition,
+    effect_decomposition = effect_decomposition,
+    causal_effects = effect_decomposition,
     bootstrap = bootstrap
   )
   class(out) <- c("zentangler_sequential_fit", "list")
@@ -1138,6 +1229,7 @@ zentangler_sequential_model_summary <- function(fit, q_threshold = 0.25) {
   }
   settings <- fit$settings %||% list()
   diagnostics <- fit$diagnostics %||% list()
+  effects <- settings$effects_summary %||% list()
   data.frame(
     input_container = settings$input_container %||% NA_character_,
     model = settings$model %||% settings$route_set_type %||% NA_character_,
@@ -1153,6 +1245,15 @@ zentangler_sequential_model_summary <- function(fit, q_threshold = 0.25) {
     glmnet_alpha = settings$glmnet_alpha %||% NA_real_,
     b_inference = settings$b_inference %||% NA_character_,
     path_inference = settings$path_inference %||% "model_based",
+    causal_inference = settings$causal_inference %||% NA_character_,
+    causal_stage = settings$causal_stage %||% NA_character_,
+    causal_stage_method = settings$causal_stage_method %||% NA_character_,
+    effect_method = settings$effect_method %||% NA_character_,
+    effect_scale = settings$effect_scale %||% NA_character_,
+    nde = effects$nde %||% NA_real_,
+    nie_total = effects$nie_total %||% NA_real_,
+    te = effects$te %||% NA_real_,
+    prop_mediated = effects$prop_mediated %||% NA_real_,
     fdr_method = settings$fdr_method %||% NA_character_,
     runtime_seconds = diagnostics$runtime_seconds %||% NA_real_,
     stringsAsFactors = FALSE
@@ -1174,6 +1275,8 @@ summarize_sequential_zentangler <- function(fit, q_threshold = 0.25) {
     top_paths = zentangler_sequential_top_paths(fit, n = 20L),
     active_paths = zentangler_sequential_active_paths(fit, q_threshold = max(zentangler_clean_q_thresholds(q_threshold))),
     edges = zentangler_sequential_edges(fit),
-    terminals = zentangler_sequential_terminals(fit)
+    terminals = zentangler_sequential_terminals(fit),
+    causal_effects = zentangler_effects(fit),
+    effects = zentangler_effects(fit)
   )
 }

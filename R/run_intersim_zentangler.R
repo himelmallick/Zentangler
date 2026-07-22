@@ -76,7 +76,7 @@ run_intersim_zentangler <- function(
   maaslin2_analysis_method = "LM",
   maaslin2_standardize = FALSE,
   maaslin2_output_dir = NULL,
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   residualize = FALSE,
@@ -104,7 +104,7 @@ run_intersim_zentangler <- function(
   q_threshold <- q_threshold[is.finite(q_threshold)]
   if (length(q_threshold) == 0) stop("q_threshold must contain at least one finite numeric cutoff.")
   eval_scopes <- if (identical(fdr_scope, "both")) c("global", "within_view") else fdr_scope
-  b_inference <- match.arg(b_inference)
+  b_inference <- normalize_b_inference_method(b_inference)
 
   if (identical(outcome.type, "survival")) {
     y_family <- "survival"

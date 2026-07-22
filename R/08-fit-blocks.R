@@ -38,7 +38,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
   primary_inference = c("model_based", "bootstrap_score"),
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased", "bootstrap"),
+  causal_inference = c("none", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -65,7 +66,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
   fdr_method <- validate_fdr_method(fdr_method)
   fdr_scope <- validate_fdr_scope(fdr_scope)
   primary_inference <- validate_primary_inference(primary_inference)
-  b_inference <- match.arg(b_inference)
+  b_inference <- normalize_b_inference_method(b_inference)
+  causal_inference <- match.arg(causal_inference)
   bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
   set.seed(seed)
   if (!identical(y_family, "survival") && (is.null(y_var) || length(y_var) != 1L || !nzchar(as.character(y_var)))) {
@@ -212,10 +214,11 @@ fit_multiview_parallel_zentangler_blocks <- function(
   )
 
   b_inference_requested <- b_inference
-  b_inference_for_initial <- if (identical(b_inference, "bootstrap")) "refit" else b_inference
-  if (identical(b_inference, "bootstrap") && bootstrap_repeats < 1L) {
-    warning("b_inference='bootstrap' requires bootstrap_repeats > 0; using active-set refit B-path p-values.")
-    b_inference_for_initial <- "refit"
+  if (identical(b_inference_requested, "bootstrap") && bootstrap_repeats < 1L) {
+    warning("b_inference='bootstrap' requires bootstrap_repeats > 0; returning initial B-path estimates without bootstrap p-values.")
+  }
+  if (identical(causal_inference, "bootstrap") && bootstrap_repeats < 1L) {
+    warning("causal_inference='bootstrap' requires bootstrap_repeats > 0; returning point estimates without bootstrap intervals.")
   }
 
   p_b_infer <- infer_p_b_multiview(
@@ -225,7 +228,7 @@ fit_multiview_parallel_zentangler_blocks <- function(
     C = C_model,
     coef_by_view = yfit$coef_by_view,
     y_family = y_family,
-    method = b_inference_for_initial,
+    method = if (identical(b_inference_requested, "bootstrap")) "bootstrap" else "debiased",
     lambda_choice = lambda_choice,
     max_debias_targets = debias_max_targets
   )
@@ -267,10 +270,16 @@ fit_multiview_parallel_zentangler_blocks <- function(
     x0 = effect_x0,
     x1 = effect_x1
   )
+  combined <- add_mediator_effect_columns(combined, effect_decomposition)
 
   key_ref <- paste(combined$omics, combined$mediator, sep = "::")
   bootstrap <- NULL
-  if (bootstrap_repeats > 0L) {
+  use_bootstrap <- bootstrap_repeats > 0L && (
+    identical(b_inference_requested, "bootstrap") ||
+      identical(causal_inference, "bootstrap") ||
+      identical(primary_inference, "bootstrap_score")
+  )
+  if (use_bootstrap) {
     bootstrap <- bootstrap_multiview_fit(
       blocks = blocks0,
       pheno_df = al$pheno,
@@ -322,8 +331,15 @@ fit_multiview_parallel_zentangler_blocks <- function(
       b_mat = bootstrap$b_matrix,
       ci_level = bootstrap_ci_level
     )
-    if (identical(b_inference, "bootstrap") && "p_b_bootstrap" %in% colnames(combined)) {
+    combined <- add_mediator_effect_bootstrap_columns(
+      combined = combined,
+      score_mat = bootstrap$score_matrix,
+      effect_decomposition = effect_decomposition,
+      ci_level = bootstrap_ci_level
+    )
+    if (identical(b_inference_requested, "bootstrap") && "p_b_bootstrap" %in% colnames(combined)) {
       has_boot_p <- is.finite(combined$p_b_bootstrap)
+      combined$p_b_initial <- combined$p_b
       combined$p_b_model_based <- combined$p_b
       combined$p_b[has_boot_p] <- combined$p_b_bootstrap[has_boot_p]
       combined$joint_p_ab <- NA_real_
@@ -336,12 +352,20 @@ fit_multiview_parallel_zentangler_blocks <- function(
       rownames(combined) <- NULL
       p_b_infer$method <- "bootstrap_b_path"
     }
-    effect_decomposition <- add_effect_bootstrap_columns(
-      effect_decomposition = effect_decomposition,
-      effect_boot = bootstrap$effect_decomposition,
-      ci_level = bootstrap_ci_level
-    )
+    if (identical(causal_inference, "bootstrap")) {
+      effect_decomposition <- add_effect_bootstrap_columns(
+        effect_decomposition = effect_decomposition,
+        effect_boot = bootstrap$effect_decomposition,
+        ci_level = bootstrap_ci_level
+      )
+    }
   }
+  causal_stage <- build_causal_stage_summary(
+    effect_decomposition = effect_decomposition,
+    combined_mediators = combined,
+    causal_inference = causal_inference,
+    bootstrap = bootstrap
+  )
 
   primary_inference_used <- "model_based"
   if (identical(primary_inference, "bootstrap_score")) {
@@ -442,14 +466,15 @@ fit_multiview_parallel_zentangler_blocks <- function(
     b_inference = b_inference_requested,
     b_inference_method = p_b_infer$method,
     b_inference_note = if (identical(b_inference_requested, "bootstrap") && bootstrap_repeats < 1L) {
-      "Requested bootstrap B-path inference, but bootstrap_repeats was 0; active-set refit B-path p-values were used."
+      "Requested bootstrap B-path inference, but bootstrap_repeats was 0; initial B-path p-values were returned without bootstrap replacement."
     } else if (identical(b_inference_requested, "bootstrap")) {
-      "B-path p-values use bootstrap refits of the B-path coefficient; p_b_model_based retains the initial active-set refit p-value."
-    } else if (identical(b_inference_requested, "debiased_lasso") && !isTRUE(all.equal(glmnet_alpha, 1))) {
+      "B-path p-values use bootstrap refits of the B-stage; p_b_initial retains the initial single-fit p-value."
+    } else if (identical(b_inference_requested, "debiased") && !isTRUE(all.equal(glmnet_alpha, 1))) {
       "B-path p-values use the current HIMA-style de-biased lasso routine; elastic-net alpha changes early/late Y-stage coefficient fitting, not the de-biased inference formula."
     } else {
       NA_character_
     },
+    causal_inference = causal_inference,
     debias_max_targets = debias_max_targets,
     y_model_method = yfit$method,
     bootstrap_repeats = as.integer(bootstrap_repeats),
@@ -457,7 +482,12 @@ fit_multiview_parallel_zentangler_blocks <- function(
     bootstrap_seed = bootstrap_seed,
     bootstrap_id = bootstrap_id,
     effect_x0 = effect_decomposition$x0,
-    effect_x1 = effect_decomposition$x1
+    effect_x1 = effect_decomposition$x1,
+    effect_method = effect_decomposition$effect_method,
+    effect_scale = effect_decomposition$effect_scale,
+    effects_summary = as.list(effect_decomposition[1, , drop = FALSE]),
+    causal_stage = causal_stage$stage,
+    causal_stage_method = causal_stage$stage_method
   )
   mediators_active_default <- zentangler_active_mediators(list(combined_mediators = combined), q_threshold = 0.25)
   view_summary_default <- zentangler_compute_view_summary(combined, q_threshold = 0.25)
@@ -480,6 +510,8 @@ fit_multiview_parallel_zentangler_blocks <- function(
     view_summary = view_summary_default,
     model_summary = model_summary_default,
     x_to_y_coef = yfit$x_coef,
+    causal_stage = causal_stage,
+    effects = effect_decomposition,
     effect_decomposition = effect_decomposition,
     causal_effects = effect_decomposition,
     bootstrap = bootstrap,

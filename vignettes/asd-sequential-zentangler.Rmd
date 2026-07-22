@@ -142,6 +142,7 @@ head(sequential_paths, 20)
 summarize_sequential_zentangler(sequential_fit)$model_summary
 head(zentangler_sequential_edges(sequential_fit), 20)
 head(zentangler_sequential_terminals(sequential_fit), 20)
+zentangler_effects(sequential_fit)
 ```
 
 # 3. Additional Sequential Route Scenarios
@@ -280,7 +281,7 @@ if (nrow(grouped_layer_paths) > 0) {
 
 The sequential API exposes the same kind of layers as the parallel API:
 complete paths, retained mediator-to-mediator edges, terminal B-stage effects,
-and run diagnostics.
+post-selection causal-effect summaries, and run diagnostics.
 
 ```{r}
 zentangler_sequential_diagnostics(sequential_fit)
@@ -304,14 +305,16 @@ sequential_boot_fit <- fit_sequential_zentangler(
   cor_q_threshold = 0.75,
   fusion_mode = "early",
   lambda_choice = "lambda.min",
-  b_inference = "debiased_lasso",
+  b_inference = "debiased",
   path_inference = "bootstrap_score",
+  causal_inference = "bootstrap",
   bootstrap_repeats = 5,
   y_family = "gaussian",
   seed = 1
 )
 
 head(zentangler_sequential_paths(sequential_boot_fit), 20)
+zentangler_effects(sequential_boot_fit)
 ```
 
 # Save Results
@@ -377,6 +380,10 @@ For sequential route fits, the main path table includes:
 | `fusion_mode` | terminal fusion mode: `early`, `intermediate`, or `late` |
 | `p_primary` | conservative path-level screening p-value |
 | `q_primary` | global FDR-adjusted path-level value |
+
+Sequential fits now also expose a post-selection causal-effect layer through
+`sequential_fit$effects`, `sequential_fit$causal_effects`, and
+`summarize_sequential_zentangler(sequential_fit)$effects`.
 
 For the pure parallel model, use the usual Zentangler helpers:
 

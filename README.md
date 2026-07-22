@@ -157,21 +157,34 @@ Sequential fits expose the same kind of result layers as the parallel API:
 | `zentangler_sequential_edges()` | retained adjacent mediator-to-mediator links |
 | `zentangler_sequential_terminals()` | terminal mediator-to-outcome coefficients |
 | `zentangler_sequential_diagnostics()` | sample counts, path counts, terminal selection counts, bootstrap status |
-| `summarize_sequential_zentangler()` | model, threshold, diagnostics, top path, active path, edge, and terminal summaries |
+| `summarize_sequential_zentangler()` | model, threshold, diagnostics, top path, active path, edge, terminal, and causal-effect summaries |
 
-By default, path evidence uses conservative refit evidence from the A-stage,
-transition links, and terminal B-stage. The terminal B-stage supports the same
-inference options as the parallel API through `b_inference`:
+Sequential route discovery still uses correlation screening for adjacent
+mediator layers, followed by regression refits for retained transition-link
+coefficients. Causal effect summaries are added in a second post-selection
+stage, analogous to the parallel API.
+
+The terminal B-stage now supports two public inference modes through
+`b_inference`:
 
 ```r
-b_inference = "debiased_lasso"          # Gaussian, and default survival dispatch
-b_inference = "debiased_logistic_lasso" # Binary outcome
-b_inference = "debiased_cox_lasso"      # Survival outcome approximation
-b_inference = "refit"                   # Active-set refit
-b_inference = "bootstrap"               # Initial refit p-values; pair with path bootstrap below
+b_inference = "debiased"  # de-biased terminal B-stage inference
+b_inference = "bootstrap" # repeated B-stage refits with bootstrap p-values
 ```
 
-For uncertainty on the complete path score, request a fixed-path bootstrap:
+To add sequential causal direct/indirect/total effect summaries, use the
+post-selection causal layer:
+
+```r
+causal_inference = "bootstrap"
+```
+
+This computes sequential `effects` / `causal_effects` after route selection and
+adds bootstrap summaries for `nde`, `nie_total`, and `te` when
+`bootstrap_repeats > 0`.
+
+For uncertainty on the complete path score and on the sequential causal-effect
+stage, request a fixed-path bootstrap:
 
 ```r
 seq_fit_boot <- fit_sequential_zentangler(
@@ -183,8 +196,9 @@ seq_fit_boot <- fit_sequential_zentangler(
   min_abs_cor = 0.3,
   cor_q_threshold = 0.25,
   lambda_choice = "lambda.min",
-  b_inference = "debiased_lasso",
+  b_inference = "debiased",
   path_inference = "bootstrap_score",
+  causal_inference = "bootstrap",
   bootstrap_repeats = 100,
   y_family = "gaussian"
 )
@@ -192,7 +206,10 @@ seq_fit_boot <- fit_sequential_zentangler(
 
 This adds bootstrap path-score means, intervals, selection frequencies, and
 bootstrap p-values. With `path_inference = "bootstrap_score"`, those bootstrap
-p-values become the final `p_primary` used for path-level q-values.
+p-values become the final `p_primary` used for path-level q-values. When
+`causal_inference = "bootstrap"`, the fit also stores sequential effect
+bootstrap summaries in `fit$effects`, `fit$causal_effects`, and
+`summarize_sequential_zentangler(fit)$effects`.
 
 For more than two mediator layers, add more entries to `stage_views`. For
 example, `list(layer1 = "species", layer2 = "kos", layer3 = "plasma_metabolites")`
@@ -237,7 +254,7 @@ seq_binary <- fit_sequential_zentangler(
   fusion_mode = "early",
   lambda_choice = "lambda.min",
   y_family = "binomial",
-  b_inference = "debiased_logistic_lasso"
+  b_inference = "debiased"
 )
 
 head(zentangler_sequential_paths(seq_binary), 20)
@@ -261,7 +278,7 @@ seq_survival <- fit_sequential_zentangler(
   y_family = "survival",
   survival_time_var = "time",
   survival_event_var = "status",
-  b_inference = "debiased_cox_lasso"
+  b_inference = "debiased"
 )
 
 head(zentangler_sequential_paths(seq_survival), 20)
@@ -392,7 +409,7 @@ fit_binary <- fit_multiview_parallel_zentangler(
   x_var = "X",
   y_var = "Y",
   y_family = "binomial",
-  b_inference = "debiased_logistic_lasso"
+  b_inference = "debiased"
 )
 ```
 
@@ -408,7 +425,7 @@ fit_survival <- fit_multiview_parallel_zentangler(
   survival_time_var = "time",
   survival_event_var = "status",
   fusion_mode = "early",
-  b_inference = "refit"
+  b_inference = "debiased"
 )
 ```
 
@@ -550,26 +567,14 @@ B-stage inference controls p-values for the mediator-to-outcome coefficient
 
 | `b_inference` | Best suited for | Notes |
 | --- | --- | --- |
-| `"debiased_lasso"` | Gaussian outcomes | HIMA-style de-biased lasso approximation |
-| `"debiased_logistic_lasso"` | Binary outcomes | logistic de-biased lasso approximation |
-| `"debiased_cox_lasso"` | Survival outcomes | Cox active-set Wald approximation after sparse selection |
-| `"refit"` | Quick model-based inference | refits the selected active mediator set |
+| `"debiased"` | Gaussian, binary, or survival outcomes | de-biased lasso for Gaussian/binomial and Cox active-set Wald approximation for survival |
 | `"bootstrap"` | Resampling-based uncertainty | requires `bootstrap_repeats > 0` |
 
 Recommended starting points:
 
 ```r
-# Continuous
-b_inference = "debiased_lasso"
-
-# Binary
-b_inference = "debiased_logistic_lasso"
-
-# Survival, quick
-b_inference = "refit"
-
-# Survival, Cox approximation
-b_inference = "debiased_cox_lasso"
+# Any supported outcome, analytic sparse B-stage inference
+b_inference = "debiased"
 
 # Any supported outcome, slower but resampling-based
 b_inference = "bootstrap"
@@ -698,6 +703,7 @@ Important fit object fields:
 | `mediators_top` | top mediators by absolute score |
 | `view_summary` | per-view tested, screened, and active counts |
 | `model_summary` | one-row run summary |
+| `effects` | direct, indirect, and total-effect-style summaries |
 | `effect_decomposition` | direct, indirect, total-effect-style summaries |
 | `bootstrap` | bootstrap matrices and failures, if enabled |
 | `fits` | fitted model objects if `return_fits = TRUE` |
@@ -750,7 +756,7 @@ fit_continuous <- fit_multiview_parallel_zentangler(
   y_var = "Y",
   y_family = "gaussian",
   fusion_mode = "early",
-  b_inference = "debiased_lasso",
+  b_inference = "debiased",
   sis_n = 50,
   screen_method = "sis",
   seed = 1
@@ -776,7 +782,7 @@ fit_binary <- fit_multiview_parallel_zentangler(
   y_var = "Y",
   y_family = "binomial",
   fusion_mode = "early",
-  b_inference = "debiased_logistic_lasso",
+  b_inference = "debiased",
   sis_n = 50,
   screen_method = "sis",
   seed = 1
@@ -796,34 +802,20 @@ sim_survival <- gen_simmba(
   seed = 1
 )
 
-fit_survival_refit <- fit_multiview_parallel_zentangler(
+fit_survival <- fit_multiview_parallel_zentangler(
   sim_survival$trainMae[[1]],
   x_var = "A",
   y_family = "survival",
   survival_time_var = "time",
   survival_event_var = "status",
   fusion_mode = "early",
-  b_inference = "refit",
+  b_inference = "debiased",
   sis_n = 50,
   screen_method = "sis",
   seed = 1
 )
 
-fit_survival_cox <- fit_multiview_parallel_zentangler(
-  sim_survival$trainMae[[1]],
-  x_var = "A",
-  y_family = "survival",
-  survival_time_var = "time",
-  survival_event_var = "status",
-  fusion_mode = "early",
-  b_inference = "debiased_cox_lasso",
-  sis_n = 50,
-  screen_method = "sis",
-  seed = 1
-)
-
-head(zentangler_all_mediators(fit_survival_refit))
-head(zentangler_all_mediators(fit_survival_cox))
+head(zentangler_all_mediators(fit_survival))
 ```
 
 ### Benchmark Runner

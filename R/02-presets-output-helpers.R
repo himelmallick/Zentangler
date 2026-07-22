@@ -10,7 +10,7 @@ zentangler_method_presets <- function() {
     fusion_mode = c(NA, "early", "early", "early", "early"),
     lambda_choice = c(NA, "lambda.1se", "lambda.min", "lambda.1se", "lambda.min"),
     glmnet_alpha = c(NA, 1, 0.5, 1, 0.5),
-    b_inference = c(NA, "debiased_lasso", "debiased_lasso", "debiased_lasso", "debiased_lasso"),
+    b_inference = c(NA, "debiased", "debiased", "debiased", "debiased"),
     description = c(
       "Do not override individual options.",
       "Fast default: LM A-stage, SIS screening, early-fusion lasso.",
@@ -36,7 +36,7 @@ zentangler_preset_values <- function(method_preset) {
       fusion_mode = "early",
       lambda_choice = "lambda.1se",
       glmnet_alpha = 1,
-      b_inference = "debiased_lasso"
+      b_inference = "debiased"
     ),
     elastic_net = list(
       a_stage_model = "lm",
@@ -44,7 +44,7 @@ zentangler_preset_values <- function(method_preset) {
       fusion_mode = "early",
       lambda_choice = "lambda.min",
       glmnet_alpha = 0.5,
-      b_inference = "debiased_lasso"
+      b_inference = "debiased"
     ),
     longitudinal_maaslin2 = list(
       a_stage_model = "maaslin2",
@@ -52,7 +52,7 @@ zentangler_preset_values <- function(method_preset) {
       fusion_mode = "early",
       lambda_choice = "lambda.1se",
       glmnet_alpha = 1,
-      b_inference = "debiased_lasso"
+      b_inference = "debiased"
     ),
     full_exploratory = list(
       a_stage_model = "lm",
@@ -60,7 +60,7 @@ zentangler_preset_values <- function(method_preset) {
       fusion_mode = "early",
       lambda_choice = "lambda.min",
       glmnet_alpha = 0.5,
-      b_inference = "debiased_lasso"
+      b_inference = "debiased"
     )
   )
 }
@@ -101,14 +101,14 @@ zentangler_active_mediators <- function(fit, q_threshold = 0.25, q_col = "q_prim
 zentangler_top_mediators <- function(
   fit,
   n = 20L,
-  order_by = c("abs_score", "q_primary", "p_primary", "score"),
+  order_by = c("abs_score", "abs_indirect_effect_linear", "q_primary", "p_primary", "score"),
   decreasing = NULL
 ) {
   order_by <- match.arg(order_by)
   tab <- zentangler_all_mediators(fit)
   if (nrow(tab) == 0) return(tab)
   if (!(order_by %in% colnames(tab))) stop("order_by not found in mediator table: ", order_by)
-  if (is.null(decreasing)) decreasing <- order_by %in% c("abs_score", "score")
+  if (is.null(decreasing)) decreasing <- order_by %in% c("abs_score", "abs_indirect_effect_linear", "score")
   ord <- order(tab[[order_by]], decreasing = decreasing, na.last = TRUE)
   out <- tab[ord, , drop = FALSE]
   out <- out[seq_len(min(as.integer(n), nrow(out))), , drop = FALSE]
@@ -155,6 +155,7 @@ zentangler_compute_model_summary <- function(settings, diagnostics, tab, q_thres
   } else {
     logical(0)
   }
+  effects <- settings$effects_summary %||% list()
   data.frame(
     method_preset = settings$method_preset %||% NA_character_,
     input_container = settings$input_container %||% NA_character_,
@@ -172,9 +173,25 @@ zentangler_compute_model_summary <- function(settings, diagnostics, tab, q_thres
     primary_inference = settings$primary_inference %||% NA_character_,
     b_inference = settings$b_inference %||% NA_character_,
     b_inference_method = settings$b_inference_method %||% NA_character_,
+    causal_inference = settings$causal_inference %||% NA_character_,
+    causal_stage = settings$causal_stage %||% NA_character_,
+    causal_stage_method = settings$causal_stage_method %||% NA_character_,
+    effect_method = settings$effect_method %||% NA_character_,
+    effect_scale = settings$effect_scale %||% NA_character_,
+    nde = effects$nde %||% NA_real_,
+    nie_total = effects$nie_total %||% NA_real_,
+    te = effects$te %||% NA_real_,
+    prop_mediated = effects$prop_mediated %||% NA_real_,
     runtime_seconds = diagnostics$runtime_seconds %||% NA_real_,
     stringsAsFactors = FALSE
   )
+}
+
+zentangler_effects <- function(fit) {
+  eff <- fit$effects %||% fit$causal_effects %||% fit$effect_decomposition
+  if (is.null(eff)) return(data.frame())
+  rownames(eff) <- NULL
+  eff
 }
 
 zentangler_model_summary <- function(fit, q_threshold = 0.25) {
@@ -229,7 +246,7 @@ summarize_zentangler <- function(fit, q_threshold = 0.25) {
     threshold_summary = zentangler_threshold_summary(fit, q_threshold = q_threshold),
     top_mediators = zentangler_top_mediators(fit, n = 20L),
     active_mediators = zentangler_active_mediators(fit, q_threshold = q_threshold),
-    causal_effects = fit$causal_effects %||% fit$effect_decomposition
+    causal_effects = zentangler_effects(fit),
+    effects = zentangler_effects(fit)
   )
 }
-

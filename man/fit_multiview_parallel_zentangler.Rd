@@ -40,8 +40,7 @@ fit_multiview_parallel_zentangler(
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global", "within_view"),
   primary_inference = c("model_based", "bootstrap_score"),
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso",
-    "refit", "bootstrap"),
+  b_inference = c("debiased", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -95,7 +94,7 @@ fit_multiview_parallel_zentangler(
 \item{fdr_method}{Multiple-testing correction used to compute q-values. Use \code{"BH"} for Benjamini-Hochberg or \code{"BY"} for Benjamini-Yekutieli.}
 \item{fdr_scope}{Final FDR scope. Use \code{"global"} to compute \code{q_primary} across all mediators from all views, or \code{"within_view"} to compute \code{q_primary} separately inside each view. Both \code{q_primary_global} and \code{q_primary_within_view} are retained in the output table.}
 \item{primary_inference}{Primary mediator p-value engine. Use \code{"model_based"} to set \code{p_primary} from joint A/B evidence, or \code{"bootstrap_score"} to set \code{p_primary} from bootstrap p-values for the mediation score. Bootstrap-score inference requires \code{bootstrap_repeats > 0}.}
-\item{b_inference}{B-path inference method. \code{"debiased_lasso"} uses Gaussian de-biased lasso for Gaussian outcomes and de-biased logistic lasso for binomial outcomes. \code{"debiased_logistic_lasso"} explicitly requests the binomial de-biased logistic lasso path. \code{"debiased_cox_lasso"} requests the Cox survival B-path approximation. \code{"refit"} uses active-set refitting. \code{"bootstrap"} uses bootstrap refits for B-path p-values and requires \code{bootstrap_repeats > 0}.}
+\item{b_inference}{B-path inference method. \code{"debiased"} uses the package's de-biased sparse B-stage approximation for Gaussian/binomial outcomes and the Cox active-set Wald approximation for survival outcomes. \code{"bootstrap"} uses bootstrap refits for B-path p-values and requires \code{bootstrap_repeats > 0}.}
 \item{debias_max_targets}{Maximum number of active B-path targets for de-biased lasso inference.}
 \item{coop_rho}{Agreement penalty strength for intermediate cooperative fusion.}
 \item{coop_maxit}{Maximum cooperative fusion iterations.}
@@ -132,7 +131,7 @@ fit <- fit_multiview_parallel_zentangler(
   sis_n = 50,
   fusion_mode = "early",
   glmnet_alpha = 0.5,
-  b_inference = "debiased_lasso",
+  b_inference = "debiased",
   bootstrap_repeats = 100
 )
 head(fit$combined_mediators)

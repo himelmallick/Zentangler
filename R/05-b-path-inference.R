@@ -457,6 +457,26 @@ debiased_cox_lasso_pvals_multiview <- function(
   list(p_b = p_b, method = "debiased_cox_lasso_active_set_wald_approx")
 }
 
+empty_p_b_multiview <- function(blocks) {
+  lapply(blocks, function(M) setNames(rep(NA_real_, ncol(M)), colnames(M)))
+}
+
+normalize_b_inference_method <- function(method) {
+  method <- as.character(method)[1]
+  if (!nzchar(method)) stop("b_inference must be a non-empty string.", call. = FALSE)
+  if (identical(method, "debiased")) return("debiased")
+  if (identical(method, "bootstrap")) return("bootstrap")
+  if (identical(method, "debiased_lasso")) return("debiased")
+  if (identical(method, "debiased_logistic_lasso")) return("debiased")
+  if (identical(method, "debiased_cox_lasso")) return("debiased")
+  if (identical(method, "refit")) return("refit")
+  stop(
+    "Unsupported b_inference: ", method,
+    ". Use 'debiased' or 'bootstrap'.",
+    call. = FALSE
+  )
+}
+
 infer_p_b_multiview <- function(
   Y,
   X,
@@ -464,13 +484,25 @@ infer_p_b_multiview <- function(
   C = NULL,
   coef_by_view,
   y_family = c("gaussian", "binomial", "survival"),
-  method = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  method = c("debiased", "bootstrap"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   max_debias_targets = 200L
 ) {
   y_family <- match.arg(y_family)
-  method <- match.arg(method)
+  method <- normalize_b_inference_method(method)
   lambda_choice <- match.arg(lambda_choice)
+
+  if (identical(method, "refit")) {
+    p_b <- infer_p_b_multiview_refit(
+      Y = Y,
+      X = X,
+      blocks = blocks,
+      C = C,
+      coef_by_view = coef_by_view,
+      y_family = y_family
+    )
+    return(list(p_b = p_b, method = "active_set_refit"))
+  }
 
   if (identical(method, "bootstrap")) {
     p_b <- infer_p_b_multiview_refit(
@@ -481,26 +513,22 @@ infer_p_b_multiview <- function(
       coef_by_view = coef_by_view,
       y_family = y_family
     )
-    return(list(p_b = p_b, method = "bootstrap_pending_active_set_refit_initial"))
+    return(list(p_b = p_b, method = "bootstrap_b_path_initial"))
   }
 
-  if (identical(method, "debiased_cox_lasso") || (identical(method, "debiased_lasso") && identical(y_family, "survival"))) {
-    if (!identical(y_family, "survival")) {
-      warning("debiased_cox_lasso is intended for survival Y; falling back to refit p-values.")
-    } else {
-      return(debiased_cox_lasso_pvals_multiview(
-        Y = Y,
-        X = X,
-        blocks = blocks,
-        C = C,
-        coef_by_view = coef_by_view,
-        lambda_choice = lambda_choice,
-        max_targets = max_debias_targets
-      ))
-    }
+  if (identical(y_family, "survival")) {
+    return(debiased_cox_lasso_pvals_multiview(
+      Y = Y,
+      X = X,
+      blocks = blocks,
+      C = C,
+      coef_by_view = coef_by_view,
+      lambda_choice = lambda_choice,
+      max_targets = max_debias_targets
+    ))
   }
 
-  if (identical(method, "debiased_lasso") && identical(y_family, "gaussian")) {
+  if (identical(y_family, "gaussian")) {
     db_try <- try(
       debiased_lasso_pvals_multiview_gaussian(
         Y = Y,
@@ -516,44 +544,73 @@ infer_p_b_multiview <- function(
     if (!inherits(db_try, "try-error")) return(db_try)
 
     msg <- conditionMessage(attr(db_try, "condition"))
-    warning("Debiased-lasso B-path inference failed; falling back to refit p-values. Reason: ", msg)
-  } else if (
-    (identical(method, "debiased_lasso") && identical(y_family, "binomial")) ||
-      identical(method, "debiased_logistic_lasso")
-  ) {
-    if (!identical(y_family, "binomial")) {
-      warning("debiased_logistic_lasso is intended for binomial Y; falling back to refit p-values.")
-    } else {
-      db_try <- try(
-        debiased_lasso_pvals_multiview_logistic(
-          Y = Y,
-          X = X,
-          blocks = blocks,
-          C = C,
-          coef_by_view = coef_by_view,
-          lambda_choice = lambda_choice,
-          max_targets = max_debias_targets
-        ),
-        silent = TRUE
-      )
-      if (!inherits(db_try, "try-error")) return(db_try)
+    warning("Debiased-lasso B-path inference failed; returning NA p-values. Reason: ", msg)
+    return(list(
+      p_b = empty_p_b_multiview(blocks),
+      method = paste0("debiased_lasso_gaussian_failed: ", msg)
+    ))
+  }
 
-      msg <- conditionMessage(attr(db_try, "condition"))
-      warning("Debiased-logistic-lasso B-path inference failed; falling back to refit p-values. Reason: ", msg)
-    }
+  if (identical(y_family, "binomial")) {
+    db_try <- try(
+      debiased_lasso_pvals_multiview_logistic(
+        Y = Y,
+        X = X,
+        blocks = blocks,
+        C = C,
+        coef_by_view = coef_by_view,
+        lambda_choice = lambda_choice,
+        max_targets = max_debias_targets
+      ),
+      silent = TRUE
+    )
+    if (!inherits(db_try, "try-error")) return(db_try)
+
+    msg <- conditionMessage(attr(db_try, "condition"))
+    warning("Debiased-logistic-lasso B-path inference failed; returning NA p-values. Reason: ", msg)
+    return(list(
+      p_b = empty_p_b_multiview(blocks),
+      method = paste0("debiased_lasso_logistic_failed: ", msg)
+    ))
   }
 
   list(
-    p_b = infer_p_b_multiview_refit(
-      Y = Y,
-      X = X,
-      blocks = blocks,
-      C = C,
-      coef_by_view = coef_by_view,
-      y_family = y_family
-    ),
-    method = "active_set_refit"
+    p_b = empty_p_b_multiview(blocks),
+    method = paste0("unsupported_y_family_for_b_inference: ", y_family)
   )
+}
+
+add_mediator_effect_columns <- function(combined, effect_decomposition) {
+  if (is.null(combined) || nrow(combined) == 0) return(combined)
+  delta_x <- suppressWarnings(as.numeric(effect_decomposition$delta_x[1]))
+  if (!is.finite(delta_x)) delta_x <- 1
+  combined$indirect_effect_linear <- combined$score * delta_x
+  combined$abs_indirect_effect_linear <- abs(combined$indirect_effect_linear)
+  if ("nie_total" %in% colnames(effect_decomposition)) {
+    total_nie <- suppressWarnings(as.numeric(effect_decomposition$nie_total[1]))
+    if (is.finite(total_nie) && abs(total_nie) > 1e-08) {
+      combined$prop_nie_linear <- combined$indirect_effect_linear / total_nie
+    } else {
+      combined$prop_nie_linear <- NA_real_
+    }
+  } else {
+    combined$prop_nie_linear <- NA_real_
+  }
+  combined
+}
+
+add_mediator_effect_bootstrap_columns <- function(combined, score_mat, effect_decomposition, ci_level = 0.95) {
+  if (is.null(score_mat) || nrow(score_mat) == 0 || is.null(combined) || nrow(combined) == 0) return(combined)
+  delta_x <- suppressWarnings(as.numeric(effect_decomposition$delta_x[1]))
+  if (!is.finite(delta_x)) return(combined)
+  indirect_mat <- score_mat * delta_x
+  alpha <- 1 - ci_level
+  combined$indirect_effect_boot_mean <- apply(indirect_mat, 2, mean, na.rm = TRUE)
+  combined$indirect_effect_boot_sd <- apply(indirect_mat, 2, stats::sd, na.rm = TRUE)
+  combined$indirect_effect_boot_low <- apply(indirect_mat, 2, stats::quantile, probs = alpha / 2, na.rm = TRUE, names = FALSE)
+  combined$indirect_effect_boot_high <- apply(indirect_mat, 2, stats::quantile, probs = 1 - alpha / 2, na.rm = TRUE, names = FALSE)
+  combined$p_indirect_bootstrap <- bootstrap_score_pvalues(observed = combined$indirect_effect_linear, score_mat = indirect_mat)
+  combined
 }
 
 assemble_mediator_table <- function(screen_tab, b_vec, p_b_vec, fdr_method = c("BH", "BY")) {

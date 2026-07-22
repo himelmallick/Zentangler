@@ -32,7 +32,7 @@ fit_sequential_zentangler(
   fusion_mode = c("early", "intermediate", "late"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
-  b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
+  b_inference = c("debiased", "bootstrap"),
   debias_max_targets = 200L,
   coop_rho = 0.2,
   coop_maxit = 100,
@@ -42,6 +42,9 @@ fit_sequential_zentangler(
   bootstrap_ci_level = 0.95,
   bootstrap_seed = seed + 10000L,
   bootstrap_id = NULL,
+  causal_inference = c("none", "bootstrap"),
+  effect_x0 = NULL,
+  effect_x1 = NULL,
   fdr_method = c("BH", "BY"),
   fdr_scope = c("global"),
   seed = 1,
@@ -83,7 +86,7 @@ summarize_sequential_zentangler(fit, q_threshold = 0.25)
 \item{fusion_mode}{Terminal mediator-to-outcome fusion mode: \code{"early"}, \code{"intermediate"}, or \code{"late"}.}
 \item{lambda_choice}{Cross-validated glmnet lambda choice for terminal fusion.}
 \item{glmnet_alpha}{Glmnet mixing parameter for early and late terminal fusion. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.}
-\item{b_inference}{Terminal B-stage inference method. Uses the same choices as the parallel API: \code{"debiased_lasso"}, \code{"debiased_logistic_lasso"}, \code{"debiased_cox_lasso"}, \code{"refit"}, or \code{"bootstrap"}.}
+\item{b_inference}{Terminal B-stage inference method. \code{"debiased"} uses the package's de-biased terminal B-stage approximation. \code{"bootstrap"} uses repeated B-stage refits and reports bootstrap terminal p-values.}
 \item{debias_max_targets}{Maximum active terminal mediators to use in debiased B-stage calculations.}
 \item{coop_rho}{Agreement penalty strength for intermediate terminal fusion.}
 \item{coop_maxit}{Maximum cooperative updates for intermediate terminal fusion.}
@@ -93,6 +96,8 @@ summarize_sequential_zentangler(fit, q_threshold = 0.25)
 \item{bootstrap_ci_level}{Bootstrap confidence level.}
 \item{bootstrap_seed}{Bootstrap random seed.}
 \item{bootstrap_id}{Optional phenotype column used for cluster bootstrap.}
+\item{causal_inference}{Optional post-selection sequential causal-effect uncertainty mode. Use \code{"bootstrap"} to add bootstrap summaries for direct, indirect, and total sequential effects.}
+\item{effect_x0,effect_x1}{Optional exposure contrast used for sequential causal effect summaries. If \code{NULL}, binary exposures use the lower/higher observed levels and continuous exposures use the 25th/75th percentiles.}
 \item{fdr_method}{FDR method for final path-level p-values.}
 \item{fdr_scope}{Currently \code{"global"} only for path-level q-values.}
 \item{seed}{Random seed.}
@@ -122,6 +127,15 @@ frequencies, and bootstrap p-values. Setting
 the final \code{p_primary}; otherwise they are reported alongside the
 model-based path evidence.
 
+Sequential fits also expose a post-selection causal-effect stage, analogous to
+the parallel API. After route discovery, Zentangler propagates the exposure
+contrast through the retained ordered mediator chain, fits an outcome model on
+\code{Y ~ X + active sequential mediators + covariates}, and reports
+\code{effects}, \code{causal_effects}, and \code{effect_decomposition}
+containing direct, indirect, and total-effect-style summaries. When
+\code{causal_inference = "bootstrap"} and \code{bootstrap_repeats > 0}, those
+sequential causal effects receive bootstrap means and intervals.
+
 Zentangler distinguishes pure parallel mediation from one-route sequential
 mediation. Use \code{fit_multiview_parallel_zentangler()} for \code{X -> M -> Y}
 models without mediator-to-mediator links, and use
@@ -136,11 +150,11 @@ views. Late fusion fits view-level terminal models and combines their scores.
 
 The sequential API supports Gaussian, binomial, and survival outcomes. For
 binomial outcomes, \code{y_var} should name a numeric
-0/1 outcome and \code{b_inference = "debiased_logistic_lasso"} requests the
+0/1 outcome and \code{b_inference = "debiased"} requests the
 logistic B-stage approximation. For survival outcomes, set
 \code{y_family = "survival"}, provide \code{survival_time_var} and
 \code{survival_event_var}, and use early or late fusion with
-\code{b_inference = "debiased_cox_lasso"} or \code{"refit"}.
+\code{b_inference = "debiased"} or \code{"bootstrap"}.
 }
 \value{
 A list with settings, diagnostics, first-layer screens, transition links,
@@ -149,7 +163,8 @@ returns the sequential path table, \code{zentangler_sequential_edges()} returns
 retained adjacent mediator links, \code{zentangler_sequential_terminals()}
 returns terminal mediator-to-outcome coefficients, and
 \code{summarize_sequential_zentangler()} returns model, threshold, diagnostic,
-path, edge, and terminal summaries.
+path, edge, terminal, and causal-effect summaries. Sequential fits also store
+\code{effects}, \code{causal_effects}, and \code{effect_decomposition}.
 }
 \examples{
 \dontrun{
@@ -175,7 +190,7 @@ fit_binary <- fit_sequential_zentangler(
   y_var = "Y_binary",
   path_templates = list(route = c("species", "fecal_metabolites")),
   y_family = "binomial",
-  b_inference = "debiased_logistic_lasso"
+  b_inference = "debiased"
 )
 
 fit_survival <- fit_sequential_zentangler(
@@ -186,7 +201,7 @@ fit_survival <- fit_sequential_zentangler(
   y_family = "survival",
   survival_time_var = "time",
   survival_event_var = "status",
-  b_inference = "debiased_cox_lasso"
+  b_inference = "debiased"
 )
 }
 }
