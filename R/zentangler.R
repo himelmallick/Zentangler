@@ -16,3 +16,4 @@
 #   07-bootstrap.R              subject/sample bootstrap utilities
 #   08-fit-blocks.R             internal matrix/block fitting engine
 #   09-fit-mae.R                public MAE-first fitting interface
+#   11-negative-controls.R      Y-permutation negative-control workflows

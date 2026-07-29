@@ -91,7 +91,13 @@ zentangler_map_path_templates <- function(path_templates, view_map) {
 }
 
 zentangler_check_route_api <- function(path_templates) {
-  if (is.null(path_templates)) return(invisible(NULL))
+  if (is.null(path_templates)) {
+    stop(
+      "fit_sequential_zentangler() now requires path_templates and supports only one explicit route. ",
+      "Example: path_templates = list(route = c('view1', 'view2')).",
+      call. = FALSE
+    )
+  }
   route_lengths <- vapply(path_templates, length, integer(1))
   if (length(route_lengths) != 1L) {
     stop(
@@ -561,9 +567,9 @@ zentangler_fit_terminal_effects <- function(
   out$b_inference_method <- p_infer$method %||% b_inference
   if (!any(is.finite(out$b) & out$b != 0)) {
     warning(
-      "Terminal fusion selected no mediators, so all terminal b coefficients are zero. ",
+      "Terminal sparse outcome modeling selected no mediators, so all terminal b coefficients are zero. ",
       "Consider lambda_choice='lambda.min', a smaller glmnet_alpha, a larger SIS/correlation screen, ",
-      "or a different fusion_mode.",
+      "or a less restrictive terminal penalty.",
       call. = FALSE
     )
   }
@@ -603,10 +609,9 @@ zentangler_extend_paths <- function(paths, links, max_paths = 10000L) {
 #' @param mae A `MultiAssayExperiment`.
 #' @param x_var Exposure column in `colData(mae)`.
 #' @param y_var Outcome column in `colData(mae)` for Gaussian/binomial outcomes.
-#' @param stage_views List of ordered mediator layers. Each element is a
-#'   character vector of experiment/view names. If `NULL`, `view_names` order is
-#'   used as one view per layer.
-#' @param path_templates Optional one-route list, for example
+#' @param stage_views Deprecated. Sequential fits now support only one explicit
+#'   route through `path_templates`.
+#' @param path_templates One-route list, for example
 #'   `list(route = c("species", "fecal_metabolites"))`. The route must contain
 #'   at least two modalities. Run multiple routes in separate calls.
 #' @param view_names Optional subset/order of MAE experiments.
@@ -625,23 +630,24 @@ zentangler_extend_paths <- function(paths, links, max_paths = 10000L) {
 #'   correlations on exposure and covariates before screening.
 #' @param max_links_per_transition Maximum retained links per adjacent transition.
 #' @param max_paths Maximum full paths to keep while expanding across k layers.
-#' @param fusion_mode Terminal mediator-to-outcome fusion mode. Uses the same
-#'   early, intermediate, and late fusion vocabulary as the parallel API.
 #' @param fdr_method FDR method for final path-level p-values.
 #' @param fdr_scope Currently `"global"` only for path-level q-values.
 #' @param seed Random seed.
-#' @param lambda_choice Cross-validated glmnet lambda choice for terminal
-#'   fusion.
-#' @param glmnet_alpha Glmnet mixing parameter for early and late terminal
-#'   fusion. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.
+#' @param lambda_choice Cross-validated glmnet lambda choice for the terminal
+#'   sparse outcome model.
+#' @param glmnet_alpha Glmnet mixing parameter for the terminal sparse outcome
+#'   model. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.
 #' @param b_inference Terminal B-stage inference method. Uses the same choices
 #'   as the parallel API: `"debiased_lasso"`, `"debiased_logistic_lasso"`,
 #'   `"debiased_cox_lasso"`, `"refit"`, or `"bootstrap"`.
 #' @param debias_max_targets Maximum active terminal mediators to use in
 #'   debiased B-stage calculations.
-#' @param coop_rho Agreement penalty strength for intermediate terminal fusion.
-#' @param coop_maxit Maximum cooperative updates for intermediate terminal fusion.
-#' @param coop_tol Convergence tolerance for intermediate terminal fusion.
+#' @param coop_rho Deprecated compatibility argument; not used for strict
+#'   route-based sequential fits.
+#' @param coop_maxit Deprecated compatibility argument; not used for strict
+#'   route-based sequential fits.
+#' @param coop_tol Deprecated compatibility argument; not used for strict
+#'   route-based sequential fits.
 #' @param path_inference Path-level inference. `"model_based"` uses the
 #'   conservative refit evidence assembled from A-stage, transition-link, and
 #'   terminal B-stage p-values. `"bootstrap_score"` uses bootstrap p-values for
@@ -682,7 +688,6 @@ fit_sequential_zentangler <- function(
   residualize_links = TRUE,
   max_links_per_transition = 5000L,
   max_paths = 10000L,
-  fusion_mode = c("early", "intermediate", "late"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   b_inference = c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit", "bootstrap"),
@@ -711,7 +716,6 @@ fit_sequential_zentangler <- function(
   screen_method <- match.arg(screen_method)
   cor_method <- match.arg(cor_method)
   cor_fdr_method <- validate_fdr_method(cor_fdr_method)
-  fusion_mode <- match.arg(fusion_mode)
   lambda_choice <- match.arg(lambda_choice)
   glmnet_alpha <- validate_glmnet_alpha(glmnet_alpha)
   b_inference <- match.arg(b_inference)
@@ -730,7 +734,13 @@ fit_sequential_zentangler <- function(
   if (!identical(y_family, "survival") && (is.null(y_var) || length(y_var) != 1L || !nzchar(as.character(y_var)))) {
     stop("y_var is required unless y_family = 'survival'.", call. = FALSE)
   }
-
+  if (!is.null(stage_views)) {
+    stop(
+      "stage_views is no longer supported. ",
+      "Sequential Zentangler now requires one explicit route through path_templates.",
+      call. = FALSE
+    )
+  }
   inputs <- zentangler_mae_to_blocks(
     mae = mae,
     view_names = view_names,
@@ -744,14 +754,10 @@ fit_sequential_zentangler <- function(
     names(inputs$blocks)
   )
   zentangler_check_route_api(path_templates)
-  if (!is.null(path_templates)) {
-    template <- path_templates[[1L]]
-    stage_views <- as.list(template)
-    names(stage_views) <- paste0("layer", seq_along(template))
-  }
-  stage_views <- zentangler_map_stage_views(stage_views, inputs$view_map)
-  stage_views <- zentangler_validate_stage_views(stage_views, names(inputs$blocks))
-  route_set_type <- zentangler_route_set_type(stage_views = stage_views)
+  template <- path_templates[[1L]]
+  stage_views <- as.list(template)
+  names(stage_views) <- paste0("layer", seq_along(template))
+  route_set_type <- "sequential"
   needed <- unique(c(x_var, y_var, survival_time_var, survival_event_var, covariates))
   al <- align_samples_multiview_blocks(inputs$blocks, inputs$pheno_df, needed_pheno_cols = needed)
   blocks <- al$blocks
@@ -890,7 +896,7 @@ fit_sequential_zentangler <- function(
       terminal_df = terminal_df,
       C = C,
       y_family = y_family,
-      fusion_mode = fusion_mode,
+      fusion_mode = "early",
       lambda_choice = lambda_choice,
       glmnet_alpha = glmnet_alpha,
       b_inference = b_inference,
@@ -975,7 +981,7 @@ fit_sequential_zentangler <- function(
         Y = Y,
         C = C,
         y_family = y_family,
-        fusion_mode = fusion_mode,
+        fusion_mode = "early",
         lambda_choice = lambda_choice,
         glmnet_alpha = glmnet_alpha,
         b_inference = b_inference,
@@ -1023,6 +1029,7 @@ fit_sequential_zentangler <- function(
       input_container = "MultiAssayExperiment",
       model = route_set_type,
       route_set_type = route_set_type,
+      path_templates = path_templates,
       x_var = x_var,
       y_var = y_var,
       y_family = y_family,
@@ -1038,7 +1045,6 @@ fit_sequential_zentangler <- function(
       cor_q_threshold = cor_q_threshold,
       cor_fdr_method = cor_fdr_method,
       residualize_links = residualize_links,
-      fusion_mode = fusion_mode,
       lambda_choice = lambda_choice,
       glmnet_alpha = glmnet_alpha,
       b_inference = b_inference,
@@ -1240,7 +1246,6 @@ zentangler_sequential_model_summary <- function(fit, q_threshold = 0.25) {
     n_terminal_effects = diagnostics$n_terminal_effects %||% nrow(zentangler_sequential_terminals(fit)),
     n_nonzero_terminal_b = diagnostics$n_nonzero_terminal_b %||% NA_integer_,
     n_transition_links = diagnostics$n_transition_links %||% nrow(zentangler_sequential_edges(fit)),
-    fusion_mode = settings$fusion_mode %||% NA_character_,
     lambda_choice = settings$lambda_choice %||% NA_character_,
     glmnet_alpha = settings$glmnet_alpha %||% NA_real_,
     b_inference = settings$b_inference %||% NA_character_,

@@ -211,7 +211,7 @@ make_null_mae <- function(mae, null_type, route_views, x_var = "X", y_var = "Y",
 }
 
 make_iteration_dir <- function(base_dir, contrast, symptom, route_name, sis_n,
-                               min_abs_cor, cor_q_threshold, fusion_mode,
+                               min_abs_cor, cor_q_threshold,
                                glmnet_alpha, lambda_choice, null_type, perm_id) {
   iter_name <- paste(
     safe_name(contrast),
@@ -220,7 +220,6 @@ make_iteration_dir <- function(base_dir, contrast, symptom, route_name, sis_n,
     paste0("sis", sis_n),
     paste0("cor", safe_num(min_abs_cor)),
     paste0("corq", safe_num(cor_q_threshold)),
-    safe_name(fusion_mode),
     paste0("alpha", safe_num(glmnet_alpha)),
     safe_name(lambda_choice),
     safe_name(null_type),
@@ -241,7 +240,6 @@ run_one <- function(mae_obs, route_views, meta, args) {
     sis_n = meta$sis_n,
     min_abs_cor = meta$min_abs_cor,
     cor_q_threshold = meta$cor_q_threshold,
-    fusion_mode = meta$fusion_mode,
     glmnet_alpha = meta$glmnet_alpha,
     lambda_choice = meta$lambda_choice,
     null_type = meta$null_type,
@@ -256,7 +254,6 @@ run_one <- function(mae_obs, route_views, meta, args) {
     "| sis=", meta$sis_n,
     "| cor>=", meta$min_abs_cor,
     "| corq<=", meta$cor_q_threshold,
-    "|", meta$fusion_mode,
     "| alpha=", meta$glmnet_alpha, "\n"
   )
 
@@ -278,7 +275,6 @@ run_one <- function(mae_obs, route_views, meta, args) {
     cor_method = args$cor_method,
     min_abs_cor = meta$min_abs_cor,
     cor_q_threshold = meta$cor_q_threshold,
-    fusion_mode = meta$fusion_mode,
     lambda_choice = meta$lambda_choice,
     glmnet_alpha = meta$glmnet_alpha,
     y_family = args$y_family,
@@ -352,7 +348,6 @@ base_seed <- as.integer(args_in$seed %||% 1L)
 sis_n_values <- as_int_vec(args_in$`sis-n` %||% args_in$sis_n, default = 100L)
 min_abs_cor_values <- as_num_vec(args_in$`min-abs-cor` %||% args_in$min_abs_cor, default = 0.05)
 cor_q_values <- as_num_vec(args_in$`cor-q-threshold` %||% args_in$cor_q_threshold, default = 0.75)
-fusion_modes <- split_arg(args_in$`fusion-mode` %||% args_in$fusion_mode, default = "early")
 glmnet_alpha_values <- as_num_vec(args_in$`glmnet-alpha` %||% args_in$glmnet_alpha, default = 1)
 lambda_choices <- split_arg(args_in$`lambda-choice` %||% args_in$lambda_choice, default = "lambda.min")
 
@@ -363,7 +358,6 @@ grid <- expand.grid(
   sis_n = sis_n_values,
   min_abs_cor = min_abs_cor_values,
   cor_q_threshold = cor_q_values,
-  fusion_mode = fusion_modes,
   glmnet_alpha = glmnet_alpha_values,
   lambda_choice = lambda_choices,
   stringsAsFactors = FALSE
@@ -408,7 +402,6 @@ for (ii in seq_len(nrow(grid))) {
           sis_n = meta$sis_n,
           min_abs_cor = meta$min_abs_cor,
           cor_q_threshold = meta$cor_q_threshold,
-          fusion_mode = meta$fusion_mode,
           glmnet_alpha = meta$glmnet_alpha,
           lambda_choice = meta$lambda_choice,
           null_type = meta$null_type,
@@ -444,7 +437,7 @@ if (nrow(all_summaries) > 0L) {
   ee <- 1L
   key_cols <- c(
     "contrast", "symptom", "route_name", "sis_n", "min_abs_cor",
-    "cor_q_threshold", "fusion_mode", "glmnet_alpha", "lambda_choice"
+    "cor_q_threshold", "glmnet_alpha", "lambda_choice"
   )
   for (i in seq_len(nrow(observed))) {
     obs <- observed[i, , drop = FALSE]

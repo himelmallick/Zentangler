@@ -116,14 +116,10 @@ links are refit by regression, and each full path is scored as:
 sequential_score = a * prod(d_links) * b_terminal
 ```
 
-The terminal mediator-to-outcome stage supports the same fusion vocabulary as
-the parallel API:
-
-| `fusion_mode` | Meaning |
-|---|---|
-| `"early"` | combine terminal mediators first, then fit one penalized outcome model |
-| `"intermediate"` | use the cooperative/intermediate learner across terminal views; requires at least two terminal views and currently supports Gaussian outcomes |
-| `"late"` | fit terminal views separately, then combine view-level scores |
+Sequential Zentangler now supports only one explicit route through
+`path_templates`. That means one ordered chain and one terminal view. The
+terminal mediator-to-outcome stage is therefore a single-view sparse outcome
+model rather than a cross-view fusion problem.
 
 Example:
 
@@ -132,9 +128,8 @@ seq_fit <- fit_sequential_zentangler(
   mae = mae,
   x_var = "X",
   y_var = "Y",
-  stage_views = list(
-    upstream = c("species", "kos"),
-    downstream = c("fecal_metabolites", "plasma_metabolites")
+  path_templates = list(
+    route = c("species", "kos", "fecal_metabolites")
   ),
   sis_n = 50,
   cor_method = "spearman",
@@ -211,14 +206,13 @@ p-values become the final `p_primary` used for path-level q-values. When
 bootstrap summaries in `fit$effects`, `fit$causal_effects`, and
 `summarize_sequential_zentangler(fit)$effects`.
 
-For more than two mediator layers, add more entries to `stage_views`. For
-example, `list(layer1 = "species", layer2 = "kos", layer3 = "plasma_metabolites")`
-fits `X -> layer1 -> layer2 -> layer3 -> Y` paths.
+For more than two mediator layers, add more views to the single route in
+`path_templates`. For example,
+`list(route_1 = c("species", "kos", "plasma_metabolites"))`
+fits `X -> species -> kos -> plasma_metabolites -> Y`.
 
-When only one specific biological route should be tested, use `path_templates`.
-Zentangler will run only that user-specified route, rather than enumerating all
-possible modality combinations. The route must contain at least two modalities.
-Run additional routes as separate sequential fits, and use
+Sequential Zentangler now always uses `path_templates`. The route must contain
+at least two modalities. Run additional routes as separate sequential fits, and use
 `fit_multiview_parallel_zentangler()` for pure `X -> M -> Y` mediation.
 
 ```r
@@ -251,7 +245,6 @@ seq_binary <- fit_sequential_zentangler(
   cor_method = "spearman",
   min_abs_cor = 0.3,
   cor_q_threshold = 0.25,
-  fusion_mode = "early",
   lambda_choice = "lambda.min",
   y_family = "binomial",
   b_inference = "debiased"
@@ -260,8 +253,7 @@ seq_binary <- fit_sequential_zentangler(
 head(zentangler_sequential_paths(seq_binary), 20)
 ```
 
-For survival outcomes, provide time and event columns. Early and late fusion are
-supported; intermediate fusion is currently Gaussian-only.
+For survival outcomes, provide time and event columns.
 
 ```r
 seq_survival <- fit_sequential_zentangler(
@@ -273,7 +265,6 @@ seq_survival <- fit_sequential_zentangler(
   cor_method = "spearman",
   min_abs_cor = 0.3,
   cor_q_threshold = 0.25,
-  fusion_mode = "early",
   lambda_choice = "lambda.min",
   y_family = "survival",
   survival_time_var = "time",

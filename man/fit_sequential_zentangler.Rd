@@ -29,7 +29,6 @@ fit_sequential_zentangler(
   residualize_links = TRUE,
   max_links_per_transition = 5000L,
   max_paths = 10000L,
-  fusion_mode = c("early", "intermediate", "late"),
   lambda_choice = c("lambda.1se", "lambda.min"),
   glmnet_alpha = 1,
   b_inference = c("debiased", "bootstrap"),
@@ -66,8 +65,8 @@ summarize_sequential_zentangler(fit, q_threshold = 0.25)
 \item{mae}{A \code{MultiAssayExperiment}.}
 \item{x_var}{Exposure column in \code{colData(mae)}.}
 \item{y_var}{Outcome column in \code{colData(mae)} for Gaussian/binomial outcomes.}
-\item{stage_views}{List of ordered mediator layers. Each element is a character vector of experiment/view names. If \code{NULL}, \code{view_names} order is used as one view per layer.}
-\item{path_templates}{Optional one-route list such as \code{list(route = c("species", "fecal_metabolites"))}. The route must contain at least two modalities. Run multiple routes in separate calls.}
+\item{stage_views}{Deprecated. Sequential fits now support only one explicit route through \code{path_templates}.}
+\item{path_templates}{One-route list such as \code{list(route = c("species", "fecal_metabolites"))}. The route must contain at least two modalities. Run multiple routes in separate calls.}
 \item{view_names}{Optional subset/order of MAE experiments.}
 \item{assay_names}{Optional assay names passed to MAE extraction.}
 \item{covariates}{Optional phenotype covariates.}
@@ -83,14 +82,13 @@ summarize_sequential_zentangler(fit, q_threshold = 0.25)
 \item{residualize_links}{Whether to residualize mediator-to-mediator correlations on exposure and covariates before screening.}
 \item{max_links_per_transition}{Maximum retained links per adjacent transition.}
 \item{max_paths}{Maximum full paths to keep while expanding across k layers.}
-\item{fusion_mode}{Terminal mediator-to-outcome fusion mode: \code{"early"}, \code{"intermediate"}, or \code{"late"}.}
-\item{lambda_choice}{Cross-validated glmnet lambda choice for terminal fusion.}
-\item{glmnet_alpha}{Glmnet mixing parameter for early and late terminal fusion. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.}
+\item{lambda_choice}{Cross-validated glmnet lambda choice for the terminal sparse outcome model.}
+\item{glmnet_alpha}{Glmnet mixing parameter for the terminal sparse outcome model. Use 1 for lasso, 0.5 for elastic net, and 0 for ridge.}
 \item{b_inference}{Terminal B-stage inference method. \code{"debiased"} uses the package's de-biased terminal B-stage approximation. \code{"bootstrap"} uses repeated B-stage refits and reports bootstrap terminal p-values.}
 \item{debias_max_targets}{Maximum active terminal mediators to use in debiased B-stage calculations.}
-\item{coop_rho}{Agreement penalty strength for intermediate terminal fusion.}
-\item{coop_maxit}{Maximum cooperative updates for intermediate terminal fusion.}
-\item{coop_tol}{Convergence tolerance for intermediate terminal fusion.}
+\item{coop_rho}{Deprecated compatibility argument; not used for strict route-based sequential fits.}
+\item{coop_maxit}{Deprecated compatibility argument; not used for strict route-based sequential fits.}
+\item{coop_tol}{Deprecated compatibility argument; not used for strict route-based sequential fits.}
 \item{path_inference}{Path-level inference. \code{"model_based"} uses the conservative refit evidence assembled from the A-stage, transition-link, and terminal B-stage p-values. \code{"bootstrap_score"} uses bootstrap p-values for the complete sequential path score and requires \code{bootstrap_repeats > 0}.}
 \item{bootstrap_repeats}{Number of path bootstrap refits. Use 0 to disable.}
 \item{bootstrap_ci_level}{Bootstrap confidence level.}
@@ -139,14 +137,13 @@ sequential causal effects receive bootstrap means and intervals.
 Zentangler distinguishes pure parallel mediation from one-route sequential
 mediation. Use \code{fit_multiview_parallel_zentangler()} for \code{X -> M -> Y}
 models without mediator-to-mediator links, and use
-\code{fit_sequential_zentangler()} for an explicit ordered route with at least
+\code{fit_sequential_zentangler()} for one explicit ordered route with at least
 two mediator modalities.
 
-The terminal mediator-to-outcome stage uses \code{fusion_mode}. Early fusion
-combines terminal mediators before fitting one penalized outcome model.
-Intermediate fusion applies the package's cooperative learner across terminal
-views and currently requires Gaussian outcomes with at least two terminal
-views. Late fusion fits view-level terminal models and combines their scores.
+Sequential Zentangler now supports only one route through
+\code{path_templates}. That implies one terminal view, so the terminal
+mediator-to-outcome stage is a single-view sparse outcome model rather than a
+cross-view fusion problem.
 
 The sequential API supports Gaussian, binomial, and survival outcomes. For
 binomial outcomes, \code{y_var} should name a numeric
@@ -172,9 +169,8 @@ fit_seq <- fit_sequential_zentangler(
   mae,
   x_var = "A",
   y_var = "Y",
-  stage_views = list(
-    microbiome = c("species", "kos"),
-    metabolites = c("fecal_metabolites", "plasma_metabolites")
+  path_templates = list(
+    route = c("species", "kos", "fecal_metabolites")
   ),
   sis_n = 50,
   cor_method = "spearman",

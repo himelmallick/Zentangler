@@ -383,10 +383,11 @@ zentangler_predict_sequential_mediators <- function(model_info, X_value, X_obs, 
     if ("X" %in% names(co)) val <- val + co[["X"]] * as.numeric(X_value)
     if (length(info$parents) > 0L) {
       for (pk in info$parents) {
+        coef_pk <- if (pk %in% names(co)) as.numeric(co[[pk]]) else 0
         if (pk %in% colnames(out)) {
-          val <- val + (co[[pk]] %||% 0) * out[, pk]
+          val <- val + coef_pk * out[, pk]
         } else {
-          val <- val + (co[[pk]] %||% 0) * as.numeric(data_by_key[[pk]])
+          val <- val + coef_pk * as.numeric(data_by_key[[pk]])
         }
       }
     }
