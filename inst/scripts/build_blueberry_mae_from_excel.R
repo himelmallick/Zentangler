@@ -56,9 +56,45 @@ build_month6_outcome_metadata <- function(longitudinal_df) {
 
   df <- normalize_blueberry_metadata(longitudinal_df, sample_col = "Sample")
   df$timepoint_num <- suppressWarnings(as.numeric(as.character(df$timepoint)))
-  df$cGMPpmolmL <- suppressWarnings(as.numeric(as.character(df$cGMPpmolmL)))
 
-  baseline <- df[df$timepoint_num == 0, c("subject", "cGMPpmolmL"), drop = FALSE]
+  longitudinal_metrics <- c(
+    "cGMPpmolmL",
+    "FMD_",
+    "AIx75bpm_",
+    "PWV_",
+    "SBP_",
+    "DBP_",
+    "insulin_",
+    "glucose",
+    "HB1Ac_",
+    "totalNO",
+    "NitriteuM",
+    "NitrateuM",
+    "TotalFreeThiolsµM",
+    "totalCholesterol",
+    "HDLC_",
+    "LDLC_",
+    "Trigl_",
+    "Chol_HDL_Ratio",
+    "HDLP",
+    "LDLP",
+    "ApoA1",
+    "ApoB",
+    "ApoBApoA1",
+    "framingham_CV_score",
+    "CRP_ug_ml20_",
+    "IL6_pg_ml20_",
+    "TNFα_pg_ml20_",
+    "total_urine_derived_metabolites",
+    "total_serum_derived_metabolites"
+  )
+  longitudinal_metrics <- longitudinal_metrics[longitudinal_metrics %in% colnames(df)]
+
+  for (metric in longitudinal_metrics) {
+    df[[metric]] <- suppressWarnings(as.numeric(as.character(df[[metric]])))
+  }
+
+  baseline <- df[df$timepoint_num == 0, c("subject", longitudinal_metrics), drop = FALSE]
   month6 <- df[df$timepoint_num == 6, , drop = FALSE]
 
   if (nrow(month6) == 0) {
@@ -66,9 +102,21 @@ build_month6_outcome_metadata <- function(longitudinal_df) {
   }
 
   baseline_idx <- match(month6$subject, baseline$subject)
-  month6$cGMP_baseline <- baseline$cGMPpmolmL[baseline_idx]
-  month6$cGMP_month6 <- month6$cGMPpmolmL
-  month6$cGMP_change <- month6$cGMP_month6 - month6$cGMP_baseline
+
+  for (metric in longitudinal_metrics) {
+    baseline_values <- baseline[[metric]][baseline_idx]
+    month6_values <- month6[[metric]]
+
+    if (identical(metric, "cGMPpmolmL")) {
+      month6$cGMP_baseline <- baseline_values
+      month6$cGMP_month6 <- month6_values
+      month6$cGMP_change <- month6$cGMP_month6 - month6$cGMP_baseline
+    } else {
+      month6[[paste0(metric, "baseline")]] <- baseline_values
+      month6[[paste0(metric, "month6")]] <- month6_values
+      month6[[paste0(metric, "change")]] <- month6_values - baseline_values
+    }
+  }
 
   # Restore sample IDs as the primary row key.
   rownames(month6) <- month6$sample
