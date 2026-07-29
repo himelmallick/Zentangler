@@ -220,6 +220,63 @@ zentangler_effects <- function(fit) {
   eff
 }
 
+zentangler_interpret_effects <- function(fit, digits = 3L) {
+  eff <- zentangler_effects(fit)
+  if (!is.data.frame(eff) || nrow(eff) == 0L) return(data.frame())
+
+  digits <- max(0L, as.integer(digits))
+  out <- eff[1, , drop = FALSE]
+  nde <- suppressWarnings(as.numeric(out$nde[[1L]] %||% NA_real_))
+  nie <- suppressWarnings(as.numeric(out$nie_total[[1L]] %||% NA_real_))
+  te <- suppressWarnings(as.numeric(out$te[[1L]] %||% NA_real_))
+  prop <- suppressWarnings(as.numeric(out$prop_mediated[[1L]] %||% NA_real_))
+
+  sign_label <- function(x) {
+    if (!is.finite(x) || abs(x) < 1e-10) return("near_zero")
+    if (x > 0) "positive" else "negative"
+  }
+
+  mediation_pattern <- if (is.finite(nie) && is.finite(te) && abs(nie) > 1e-10 && abs(te) > 1e-10) {
+    if (sign(nie) == sign(te)) "same_direction_mediation" else "opposing_direction_mediation"
+  } else if (is.finite(nie) && abs(nie) < 1e-10) {
+    "little_or_no_indirect_effect"
+  } else {
+    NA_character_
+  }
+
+  direct_vs_indirect_pattern <- if (is.finite(nde) && is.finite(nie) && abs(nde) > 1e-10 && abs(nie) > 1e-10) {
+    if (sign(nde) == sign(nie)) "direct_and_indirect_align" else "direct_and_indirect_oppose"
+  } else {
+    NA_character_
+  }
+
+  interpretation <- if (identical(mediation_pattern, "same_direction_mediation")) {
+    "Indirect and total effects point in the same direction, consistent with same-direction mediation."
+  } else if (identical(mediation_pattern, "opposing_direction_mediation")) {
+    "Indirect and total effects point in opposite directions, consistent with opposing-direction mediation or suppression."
+  } else if (identical(mediation_pattern, "little_or_no_indirect_effect")) {
+    "The estimated indirect effect is near zero, so the selected mediators explain little of the modeled total effect."
+  } else {
+    "Effect decomposition is available, but the mediation pattern is not cleanly classified."
+  }
+
+  data.frame(
+    effect_method = out$effect_method[[1L]] %||% NA_character_,
+    effect_scale = out$effect_scale[[1L]] %||% NA_character_,
+    nde = round(nde, digits = digits),
+    nie_total = round(nie, digits = digits),
+    te = round(te, digits = digits),
+    prop_mediated = round(prop, digits = digits),
+    nde_direction = sign_label(nde),
+    nie_direction = sign_label(nie),
+    te_direction = sign_label(te),
+    mediation_pattern = mediation_pattern,
+    direct_vs_indirect_pattern = direct_vs_indirect_pattern,
+    interpretation = interpretation,
+    stringsAsFactors = FALSE
+  )
+}
+
 zentangler_model_summary <- function(fit, q_threshold = 0.25) {
   zentangler_compute_model_summary(
     settings = fit$settings %||% list(),
