@@ -80,6 +80,32 @@ zentangler_all_mediators <- function(fit) {
   tab
 }
 
+zentangler_mediator_effects <- function(fit) {
+  tab <- zentangler_all_mediators(fit)
+  if (nrow(tab) == 0L) return(tab)
+
+  eff <- zentangler_effects(fit)
+  if (!("indirect_effect_linear" %in% colnames(tab)) && is.data.frame(eff) && nrow(eff) > 0L) {
+    tab <- add_mediator_effect_columns(tab, eff)
+  }
+
+  keep <- intersect(
+    c(
+      "omics", "mediator",
+      "a", "b", "score", "abs_score",
+      "indirect_effect_linear", "abs_indirect_effect_linear", "prop_nie_linear",
+      "indirect_effect_boot_mean", "indirect_effect_boot_sd",
+      "indirect_effect_boot_low", "indirect_effect_boot_high",
+      "p_indirect_bootstrap",
+      "p_primary", "q_primary", "q_primary_global", "q_primary_within_view"
+    ),
+    colnames(tab)
+  )
+  out <- tab[, keep, drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
 zentangler_clean_q_thresholds <- function(q_threshold) {
   q_threshold <- sort(unique(as.numeric(q_threshold)))
   q_threshold <- q_threshold[is.finite(q_threshold)]

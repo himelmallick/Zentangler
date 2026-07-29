@@ -36,6 +36,30 @@ zentangler_overlap_count <- function(a, b) {
   length(intersect(unique(as.character(a)), unique(as.character(b))))
 }
 
+zentangler_effect_summary_row <- function(fit, prefix = "") {
+  eff <- zentangler_effects(fit)
+  if (!is.data.frame(eff) || nrow(eff) == 0L) {
+    return(data.frame(
+      effect_method = NA_character_,
+      effect_scale = NA_character_,
+      nde = NA_real_,
+      nie_total = NA_real_,
+      te = NA_real_,
+      prop_mediated = NA_real_,
+      stringsAsFactors = FALSE
+    ))
+  }
+  data.frame(
+    effect_method = if ("effect_method" %in% names(eff)) as.character(eff$effect_method[[1L]]) else NA_character_,
+    effect_scale = if ("effect_scale" %in% names(eff)) as.character(eff$effect_scale[[1L]]) else NA_character_,
+    nde = if ("nde" %in% names(eff)) suppressWarnings(as.numeric(eff$nde[[1L]])) else NA_real_,
+    nie_total = if ("nie_total" %in% names(eff)) suppressWarnings(as.numeric(eff$nie_total[[1L]])) else NA_real_,
+    te = if ("te" %in% names(eff)) suppressWarnings(as.numeric(eff$te[[1L]])) else NA_real_,
+    prop_mediated = if ("prop_mediated" %in% names(eff)) suppressWarnings(as.numeric(eff$prop_mediated[[1L]])) else NA_real_,
+    stringsAsFactors = FALSE
+  )
+}
+
 zentangler_direction_preference <- function(
   forward_n,
   reverse_n,
@@ -81,6 +105,7 @@ zentangler_parallel_direction_summary <- function(
   tab <- zentangler_all_mediators(fit)
   active <- zentangler_active_mediators(fit, q_threshold = q_threshold)
   top <- zentangler_top_mediators(fit, n = 1L)
+  eff <- zentangler_effect_summary_row(fit)
   data.frame(
     direction = as.character(direction),
     x_var = as.character(x_var),
@@ -92,6 +117,12 @@ zentangler_parallel_direction_summary <- function(
     max_abs_score = if ("abs_score" %in% names(tab)) zentangler_max_finite_or_na(tab$abs_score) else if ("score" %in% names(tab)) zentangler_max_finite_or_na(abs(tab$score)) else NA_real_,
     top_mediator = if (nrow(top) > 0L && "mediator" %in% names(top)) as.character(top$mediator[[1L]]) else NA_character_,
     top_view = if (nrow(top) > 0L && "omics" %in% names(top)) as.character(top$omics[[1L]]) else NA_character_,
+    effect_method = eff$effect_method[[1L]],
+    effect_scale = eff$effect_scale[[1L]],
+    nde = eff$nde[[1L]],
+    nie_total = eff$nie_total[[1L]],
+    te = eff$te[[1L]],
+    prop_mediated = eff$prop_mediated[[1L]],
     stringsAsFactors = FALSE
   )
 }
@@ -107,6 +138,7 @@ zentangler_sequential_direction_summary <- function(
   tab <- zentangler_sequential_paths(fit)
   active <- zentangler_sequential_active_paths(fit, q_threshold = q_threshold)
   top <- zentangler_sequential_top_paths(fit, n = 1L)
+  eff <- zentangler_effect_summary_row(fit)
   data.frame(
     direction = as.character(direction),
     x_var = as.character(x_var),
@@ -119,6 +151,12 @@ zentangler_sequential_direction_summary <- function(
     top_path = if (nrow(top) > 0L) zentangler_safe_first(zentangler_sequential_path_ids(top)) else NA_character_,
     top_terminal_view = if (nrow(top) > 0L && "terminal_view" %in% names(top)) as.character(top$terminal_view[[1L]]) else NA_character_,
     top_terminal_mediator = if (nrow(top) > 0L && "terminal_mediator" %in% names(top)) as.character(top$terminal_mediator[[1L]]) else NA_character_,
+    effect_method = eff$effect_method[[1L]],
+    effect_scale = eff$effect_scale[[1L]],
+    nde = eff$nde[[1L]],
+    nie_total = eff$nie_total[[1L]],
+    te = eff$te[[1L]],
+    prop_mediated = eff$prop_mediated[[1L]],
     stringsAsFactors = FALSE
   )
 }
@@ -139,6 +177,14 @@ zentangler_parallel_direction_comparison <- function(forward_fit, reverse_fit, f
     reverse_best_q = reverse_summary$best_q[[1L]],
     forward_max_abs_score = forward_summary$max_abs_score[[1L]],
     reverse_max_abs_score = reverse_summary$max_abs_score[[1L]],
+    forward_nde = forward_summary$nde[[1L]],
+    reverse_nde = reverse_summary$nde[[1L]],
+    forward_nie_total = forward_summary$nie_total[[1L]],
+    reverse_nie_total = reverse_summary$nie_total[[1L]],
+    forward_te = forward_summary$te[[1L]],
+    reverse_te = reverse_summary$te[[1L]],
+    forward_prop_mediated = forward_summary$prop_mediated[[1L]],
+    reverse_prop_mediated = reverse_summary$prop_mediated[[1L]],
     overlap_active_mediators = zentangler_overlap_count(active_forward, active_reverse),
     overlap_top20_mediators = zentangler_overlap_count(top_forward, top_reverse),
     direction_preference = zentangler_direction_preference(
@@ -182,6 +228,14 @@ zentangler_sequential_direction_comparison <- function(
     reverse_best_q = reverse_summary$best_q[[1L]],
     forward_max_abs_sequential_score = forward_summary$max_abs_sequential_score[[1L]],
     reverse_max_abs_sequential_score = reverse_summary$max_abs_sequential_score[[1L]],
+    forward_nde = forward_summary$nde[[1L]],
+    reverse_nde = reverse_summary$nde[[1L]],
+    forward_nie_total = forward_summary$nie_total[[1L]],
+    reverse_nie_total = reverse_summary$nie_total[[1L]],
+    forward_te = forward_summary$te[[1L]],
+    reverse_te = reverse_summary$te[[1L]],
+    forward_prop_mediated = forward_summary$prop_mediated[[1L]],
+    reverse_prop_mediated = reverse_summary$prop_mediated[[1L]],
     overlap_terminal_mediators = zentangler_overlap_count(term_forward_ids, term_reverse_ids),
     overlap_top_paths = zentangler_overlap_count(top_forward, top_reverse),
     overlap_active_paths = zentangler_overlap_count(active_forward, active_reverse),
@@ -218,7 +272,7 @@ zentangler_sequential_direction_comparison <- function(
 #' @param ... Additional arguments passed to `fit_multiview_parallel_zentangler()`.
 #'
 #' @return A list containing forward and reverse summaries, a comparison table,
-#'   and optionally the two fitted objects.
+#'   effect summaries, and optionally the two fitted objects.
 #' @export
 run_parallel_direction_check <- function(
   mae,
@@ -326,7 +380,7 @@ run_parallel_direction_check <- function(
 #' @param ... Additional arguments passed to `fit_sequential_zentangler()`.
 #'
 #' @return A list containing forward and reverse summaries, a comparison table,
-#'   and optionally the two fitted objects.
+#'   effect summaries, and optionally the two fitted objects.
 #' @export
 run_sequential_direction_check <- function(
   mae,
