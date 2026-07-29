@@ -1,0 +1,387 @@
+---
+title: "Zentangler_ISMB"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Zentangler_ISMB}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Overview
+
+This short tutorial uses an ASD example for comparing:
+
+1. `HIMA2`, run one omics view at a time.
+2. `Zentangler`, run across all ASD omics views together.
+
+This tutorial uses:
+
+- the ASD example data already shipped in `data/`
+- one symptom outcome: `abc`
+- one time contrast: `T0` versus `T1`
+- a continuous outcome only
+
+
+# Data Used
+
+The modalities used are:
+
+```text
+Species
+KOs
+Fecal Metabolites
+Plasma Metabolites
+```
+
+The exposure is treatment time:
+
+```text
+X = 0 for baseline `T0`
+X = 1 for T1
+```
+
+The outcome is the `abc` symptom score.
+
+# Packages
+
+```{r}
+library(Zentangler)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+library(S4Vectors)
+
+if (!requireNamespace("HIMA", quietly = TRUE)) {
+  stop("Install HIMA before running the HIMA2 part of this tutorial.")
+}
+```
+
+
+
+# Load The RData
+
+
+```{r}
+load('/Users/nalinarora/Desktop/Zentangler/data/asd_ABC_t1_baseline.RData')
+
+mae_t1_abc
+
+```
+
+# Run Zentangler
+
+For a first pass, `late` fusion is a practical choice because it lets each omics
+view keep its own signal structure before combining the view-level predictions.
+
+```{r}
+zt_fit <- fit_multiview_parallel_zentangler(
+  mae_t1_abc,
+  y_var = "Y",
+  study_design = "time",
+  time_var = "timepoint",
+  time_ref = "T0",
+  time_compare = "T1",
+  covariates = NULL,
+  screen_method = "sis",
+  sis_n = 50,
+  sis_rank = "abs_a",
+  fusion_mode = "early",
+  glmnet_alpha = 0.5,
+  y_family = "gaussian",
+  fdr_method = "BH",
+  fdr_scope = "global",
+  fill_nonfinite_zero = TRUE,
+  seed = 1
+)
+
+zentangler_model_summary(zt_fit)
+zentangler_view_summary(zt_fit, q_threshold = 0.25)
+zentangler_top_mediators(zt_fit, n = 15)
+zentangler_active_mediators(zt_fit, q_threshold = 0.25)
+```
+
+# Run HIMA2 One View At A Time
+
+HIMA2 is a single-view method, so we loop over the ASD modalities one by one.
+
+```{r}
+mae_block <- function(mae, view) {
+  extract_block <- getFromNamespace("zentangler_mae_extract_block", "Zentangler")
+  extract_block(
+    mae,
+    experiment_name = view,
+    fill_nonfinite_zero = TRUE
+  )
+}
+
+run_hima2_one_view <- function(M, pheno, penalty = "DBlasso", outcome_family = "gaussian") {
+  ns <- asNamespace("HIMA")
+  fun_name <- if (exists("hima", envir = ns, inherits = FALSE)) "hima" else "hima2"
+  fun <- get(fun_name, envir = ns)
+  argn <- names(formals(fun))
+  data_M <- as.data.frame(M, check.names = FALSE)
+
+  if ("formula" %in% argn) {
+    call_args <- list(formula = Y ~ X)
+    if ("data.pheno" %in% argn) call_args$data.pheno <- pheno
+    if ("data.M" %in% argn) call_args$data.M <- data_M
+    if ("mediator.type" %in% argn) call_args$mediator.type <- "gaussian"
+    if ("mediator.family" %in% argn) call_args$mediator.family <- "gaussian"
+    if ("outcome.family" %in% argn) call_args$outcome.family <- "gaussian"
+    if ("penalty" %in% argn) call_args$penalty <- penalty
+    if ("scale" %in% argn) call_args$scale <- FALSE
+    if ("verbose" %in% argn) call_args$verbose <- FALSE
+    if ("topN" %in% argn) call_args$topN <- ncol(data_M)
+    if ("sigcut" %in% argn) call_args$sigcut <- 1
+    if ("Sigcut" %in% argn) call_args$Sigcut <- 1
+    return(do.call(fun, call_args))
+  }
+
+  call_args <- list(X = pheno$X, Y = pheno$Y, M = as.matrix(M))
+  if ("penalty" %in% argn) call_args$penalty <- penalty
+  if ("topN" %in% argn) call_args$topN <- ncol(M)
+  if ("sigcut" %in% argn) call_args$sigcut <- 1
+  if ("Sigcut" %in% argn) call_args$Sigcut <- 1
+  do.call(fun, call_args)
+}
+
+standardize_hima2_table <- function(fit, view) {
+  tab <- tryCatch({
+    if (inherits(fit, "hima") && is.list(fit)) {
+      lens <- vapply(fit, length, integer(1))
+      keep <- names(fit)[lens == max(lens) & lens > 0]
+      as.data.frame(fit[keep], check.names = FALSE, stringsAsFactors = FALSE)
+    } else {
+      as.data.frame(fit, check.names = FALSE)
+    }
+  }, error = function(e) data.frame())
+  if (nrow(tab) == 0) return(tab)
+
+  if ("ID" %in% names(tab)) {
+    tab$mediator <- as.character(tab$ID)
+  } else {
+    tab$mediator <- rownames(tab)
+  }
+  rownames(tab) <- NULL
+  names(tab) <- make.names(names(tab), unique = TRUE)
+
+  p_col <- intersect(c("p.value", "p.value.", "p", "P.value", "raw.p", "raw_p"), names(tab))
+  q_col <- intersect(c("BH.FDR", "BH_FDR", "q.value", "qvalue", "FDR"), names(tab))
+  a_col <- intersect(c("alpha", "a", "alpha_hat"), names(tab))
+  b_col <- intersect(c("beta", "b", "beta_hat"), names(tab))
+  ab_col <- intersect(c("alpha.beta", "alpha.beta.", "alpha.beta.."), names(tab))
+
+  tab$p_primary <- if (length(p_col) > 0) as.numeric(tab[[p_col[[1]]]]) else NA_real_
+  tab$q_hima_reported <- if (length(q_col) > 0) as.numeric(tab[[q_col[[1]]]]) else NA_real_
+  tab$a <- if (length(a_col) > 0) as.numeric(tab[[a_col[[1]]]]) else NA_real_
+  tab$b <- if (length(b_col) > 0) as.numeric(tab[[b_col[[1]]]]) else NA_real_
+  tab$score <- if (length(ab_col) > 0) as.numeric(tab[[ab_col[[1]]]]) else tab$a * tab$b
+  tab$view <- view
+  tab
+}
+
+run_hima2_mae <- function(mae, x_var = "X", y_var = "Y") {
+  pheno <- as.data.frame(SummarizedExperiment::colData(mae))
+  pheno$X <- suppressWarnings(as.numeric(as.character(pheno[[x_var]])))
+  pheno$Y <- suppressWarnings(as.numeric(as.character(pheno[[y_var]])))
+  pheno <- pheno[is.finite(pheno$X) & is.finite(pheno$Y), , drop = FALSE]
+
+  results <- list()
+
+  for (view in names(MultiAssayExperiment::experiments(mae))) {
+    M <- mae_block(mae, view)
+    common <- intersect(rownames(pheno), rownames(M))
+    M <- M[common, , drop = FALSE]
+    pheno_view <- pheno[common, , drop = FALSE]
+
+    if (length(unique(pheno_view$X)) < 2 || nrow(pheno_view) < 8 || ncol(M) < 2) {
+      next
+    }
+
+    fit <- run_hima2_one_view(M, pheno_view)
+    results[[view]] <- standardize_hima2_table(fit, view)
+  }
+
+  out <- if (length(results) > 0) do.call(rbind, results) else data.frame()
+  if (nrow(out) > 0) {
+    out$q_primary_global <- p.adjust(out$p_primary, method = "BH")
+  }
+  rownames(out) <- NULL
+  out
+}
+
+hima2_tab <- run_hima2_mae(mae_t1_abc)
+head(hima2_tab[order(hima2_tab$q_primary_global), ], 15)
+```
+
+# Simple HIMA2 Versus Zentangler Comparison
+
+Use the same ASD slice and compare the top ranked mediators from both methods.
+
+```{r}
+zt_tab <- zentangler_all_mediators(zt_fit)
+zt_top <- zt_tab[order(zt_tab$q_primary), c("omics", "mediator", "score", "q_primary_global")]
+hima_top <- hima2_tab[order(hima2_tab$q_primary_global), c("view", "mediator", "p_primary", "q_primary_global")]
+
+head(zt_top, 10)
+head(hima_top, 10)
+```
+
+Interpretation:
+
+- `HIMA2` asks whether each modality contains mediators when analyzed alone.
+- `Zentangler` asks whether mediators remain important after joint multiview
+  screening and fusion.
+- If a feature ranks highly in both methods, it is often a useful follow-up
+  candidate.
+
+# Compare Fusion Strategies
+
+| Fusion mode | Idea | Practical note |
+| --- | --- | --- |
+| `early` | stack selected mediators from all views into one model | easiest to explain |
+| `intermediate` | encourage view-specific models to agree | Gaussian outcomes only |
+| `late` | fit each view first, then combine view-level predictions | helpful when views differ a lot |
+
+```{r}
+fusion_modes <- c("early", "intermediate", "late")
+
+fusion_fits <- lapply(fusion_modes, function(mode) {
+  fit_multiview_parallel_zentangler(
+    mae_t1_abc,
+    y_var = "Y",
+    study_design = "time",
+    time_var = "timepoint",
+    time_ref = "T0",
+    time_compare = "T1",
+    screen_method = "sis",
+    sis_n = 50,
+    sis_rank = "abs_a",
+    fusion_mode = mode,
+    glmnet_alpha = 0.5,
+    y_family = "gaussian",
+    fdr_method = "BH",
+    fdr_scope = "global",
+    fill_nonfinite_zero = TRUE,
+    seed = 1
+  )
+})
+
+names(fusion_fits) <- fusion_modes
+
+fusion_summary <- do.call(rbind, lapply(names(fusion_fits), function(mode) {
+  top_tab <- zentangler_top_mediators(fusion_fits[[mode]], n = 5)
+  data.frame(
+    fusion_mode = mode,
+    n_active_q0p25 = nrow(zentangler_active_mediators(fusion_fits[[mode]], q_threshold = 0.25)),
+    top_mediators = paste(top_tab$mediator, collapse = "; "),
+    stringsAsFactors = FALSE
+  )
+}))
+
+fusion_summary
+```
+
+# Top 5 DAGs
+
+The code below keeps mediators with `q_primary < 0.25`, then plots the top 5
+ranked by `score`.
+
+```{r, fig.width=14, fig.height=16, out.width='100%', fig.align='center'}
+zt_sig <- subset(
+  zentangler_all_mediators(zt_fit),
+  is.finite(q_primary) & q_primary < 0.25
+)
+
+zt_sig <- zt_sig[order(zt_sig$score, decreasing = TRUE, na.last = TRUE), , drop = FALSE]
+zt_top5 <- head(zt_sig, 5)
+
+wrap_node_text <- function(x, width = 22) {
+  paste(strwrap(x, width = width), collapse = "\n")
+}
+
+format_effect <- function(x) {
+  ifelse(is.finite(x), formatC(x, digits = 3, format = "f"), "NA")
+}
+
+draw_box <- function(xleft, ybottom, xright, ytop, label,
+                     fill = "#1155cc", border = "#8fb3ff", cex = 1.1) {
+  rect(xleft, ybottom, xright, ytop, col = fill, border = border, lwd = 2)
+  text((xleft + xright) / 2, (ybottom + ytop) / 2, label,
+       col = "white", cex = cex, font = 2)
+}
+
+draw_labeled_arrow <- function(x0, y0, x1, y1, label, label_x, label_y,
+                               col = "#1155cc", lwd = 2.5, cex = 1.2) {
+  arrows(x0, y0, x1, y1, length = 0.1, lwd = lwd, col = col)
+  text(label_x, label_y, labels = label, cex = cex, font = 2, col = "black")
+}
+
+plot_mediator_dag <- function(row_i, rank_i, outcome_label = "ABC") {
+  mediator_label <- paste0(
+    wrap_node_text(as.character(row_i$mediator), width = 24),
+    "\n(",
+    gsub("_", " ", as.character(row_i$omics), fixed = TRUE),
+    ")"
+  )
+
+  plot.new()
+  plot.window(xlim = c(0, 1), ylim = c(0, 1))
+  title(main = paste0(rank_i, "."), adj = 0.04, cex.main = 1.8, font.main = 2)
+
+  draw_box(0.03, 0.08, 0.36, 0.26, "10 weeks vs. baseline", cex = 1.25)
+  draw_box(0.27, 0.62, 0.69, 0.90, mediator_label, cex = 1.05)
+  draw_box(0.70, 0.10, 0.96, 0.28, outcome_label, cex = 1.25)
+
+  draw_labeled_arrow(
+    0.17, 0.26, 0.40, 0.62,
+    format_effect(as.numeric(row_i$a)),
+    label_x = 0.24, label_y = 0.45
+  )
+  draw_labeled_arrow(
+    0.58, 0.62, 0.83, 0.28,
+    format_effect(as.numeric(row_i$b)),
+    label_x = 0.76, label_y = 0.44
+  )
+  draw_labeled_arrow(
+    0.36, 0.17, 0.70, 0.17,
+    format_effect(as.numeric(row_i$score)),
+    label_x = 0.53, label_y = 0.24
+  )
+}
+
+old_par <- par(no.readonly = TRUE)
+on.exit(par(old_par), add = TRUE)
+
+par(
+  mfrow = c(3, 2),
+  mar = c(1.2, 1.2, 2.2, 1.2),
+  oma = c(0, 0, 1, 0),
+  xaxs = "i",
+  yaxs = "i"
+)
+
+for (i in seq_len(nrow(zt_top5))) {
+  plot_mediator_dag(
+    row_i = zt_top5[i, , drop = FALSE],
+    rank_i = i,
+    outcome_label = "ABC"
+  )
+}
+
+if (nrow(zt_top5) < 6) {
+  plot.new()
+}
+```
+
+```{r}
+sessionInfo()
+```
