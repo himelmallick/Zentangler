@@ -11,10 +11,10 @@
 source /athena/mallicklab/scratch/naa4050/miniconda3/etc/profile.d/conda.sh
 conda activate r-env
 
-PACKAGE_DIR=${PACKAGE_DIR:-/home/fs01/naa4050/Zentangler}
-GRID_FILE=${GRID_FILE:-/home/fs01/naa4050/Zentangler/intersim_zentangler_grid.csv}
-SIM_DIR=${SIM_DIR:-/home/fs01/naa4050/Zentangler/simmba_cache}
-OUT_DIR=${OUT_DIR:-/home/fs01/naa4050/Zentangler/singleview_comparator_paired_results}
+PACKAGE_DIR=${PACKAGE_DIR:-/home/fs01/naa4050/Zentangler_run}
+GRID_FILE=${GRID_FILE:-/home/fs01/naa4050/Zentangler_run/intersim_zentangler_grid.csv}
+SIM_DIR=${SIM_DIR:-/home/fs01/naa4050/Zentangler_run/simmba_cache}
+OUT_DIR=${OUT_DIR:-/home/fs01/naa4050/Zentangler_run/singleview_comparator_paired_results}
 TASK_OFFSET=${TASK_OFFSET:-0}
 TASK_SCRIPT=${TASK_SCRIPT:-${PACKAGE_DIR}/run_singleview_comparator_hpc_task.R}
 METHODS=${METHODS:-hima,hima2,multimedia}

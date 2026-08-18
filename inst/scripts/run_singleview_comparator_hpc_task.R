@@ -18,7 +18,7 @@
 #     --grid intersim_zentangler_grid.csv \
 #     --task-id 1 \
 #     --out-dir singleview_comparator_results \
-#     --package-dir /home/fs01/naa4050/Zentangler \
+#     --package-dir /home/fs01/naa4050/Zentangler_run \
 #     --methods hima,hima2,multimedia
 
 options(stringsAsFactors = FALSE)

@@ -11,9 +11,9 @@
 source /athena/mallicklab/scratch/naa4050/miniconda3/etc/profile.d/conda.sh
 conda activate r-env
 
-PACKAGE_DIR=${PACKAGE_DIR:-/home/fs01/naa4050/Zentangler}
-GRID_FILE=${GRID_FILE:-/home/fs01/naa4050/Zentangler/intersim_zentangler_grid.csv}
-OUT_DIR=${OUT_DIR:-/home/fs01/naa4050/Zentangler/singleview_comparator_results}
+PACKAGE_DIR=${PACKAGE_DIR:-/home/fs01/naa4050/Zentangler_run}
+GRID_FILE=${GRID_FILE:-/home/fs01/naa4050/Zentangler_run/intersim_zentangler_grid.csv}
+OUT_DIR=${OUT_DIR:-/home/fs01/naa4050/Zentangler_run/singleview_comparator_results}
 TASK_OFFSET=${TASK_OFFSET:-0}
 METHODS=${METHODS:-hima,hima2,multimedia}
 HIMA_PENALTY=${HIMA_PENALTY:-DBlasso}

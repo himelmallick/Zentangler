@@ -10,6 +10,7 @@
 #
 # Optional profiles:
 #   --profile focused   small smoke/iteration grid, about 320 jobs
+#   --profile small_n   small-sample simulation grid for nsample 50-500
 #   --profile hpc5000   default, continuous-outcome method grid
 #   --profile expanded  alias for hpc5000 to avoid accidental huge grids
 #   --profile full      larger follow-up grid, includes nonlinear continuous settings
@@ -42,7 +43,7 @@ sim_out_file <- if (!is.null(args$`sim-out`)) args$`sim-out` else if (!is.null(a
   sub("[.]csv$", "_sim_grid.csv", out_file)
 }
 profile <- if (!is.null(args$profile)) as.character(args$profile) else "hpc5000"
-profile <- match.arg(profile, choices = c("focused", "hpc5000", "expanded", "full"))
+profile <- match.arg(profile, choices = c("focused", "small_n", "hpc5000", "expanded", "full"))
 if (identical(profile, "expanded")) profile <- "hpc5000"
 
 # -------------------------------------------------------------------------
@@ -50,6 +51,8 @@ if (identical(profile, "expanded")) profile <- "hpc5000"
 # -------------------------------------------------------------------------
 # focused:
 #   Fast smoke grid for checking package/HPC setup.
+# small_n:
+#   Small-sample paired benchmark grid for nsample 50, 100, 200, 300, and 500.
 # hpc5000:
 #   Recommended first serious HPC grid. It covers the important method axes
 #   for continuous outcomes, where current de-biased lasso B-path inference is valid.
@@ -67,6 +70,29 @@ if (identical(profile, "focused")) {
   q_thresholds <- seq(0.05, 0.25, by = 0.05)
   sis_n_values <- c(100L)
   sis_rank_values <- c("abs_a")
+  include_screen_none <- TRUE
+  outcome_grid <- expand.grid(
+    outcome_type = "continuous",
+    ygen_mode = "LM",
+    stringsAsFactors = FALSE
+  )
+  signal_grid <- expand.grid(
+    snr = c(1, 2),
+    n_pathways = c(10L, 30L),
+    TIE = c(1),
+    stringsAsFactors = FALSE
+  )
+  b_inference_values <- c("debiased_lasso")
+} else if (identical(profile, "small_n")) {
+  nsample_values <- c(50L, 100L, 200L, 300L, 500L)
+  nrep_per_job <- 10L
+  a_stage_models <- c("lm", "maaslin2")
+  lambda_choices <- c("lambda.1se", "lambda.min")
+  glmnet_alpha_values <- c(1, 0.5)
+  fdr_methods <- c("BH", "BY")
+  q_thresholds <- seq(0.05, 0.25, by = 0.05)
+  sis_n_values <- c(50L, 100L, 200L)
+  sis_rank_values <- c("abs_a", "pvalue")
   include_screen_none <- TRUE
   outcome_grid <- expand.grid(
     outcome_type = "continuous",

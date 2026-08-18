@@ -14,7 +14,7 @@
 #     --task-id ${SLURM_ARRAY_TASK_ID} \
 #     --task-offset 0 \
 #     --out-dir hpc_results \
-#     --package-dir /home/fs01/naa4050/Zentangler
+#     --package-dir /home/fs01/naa4050/Zentangler_run
 #
 # If your cluster has MaxArraySize <= 1000, submit repeated arrays with
 # --array=1-1000 and increase --task-offset by 1000 for each chunk.
