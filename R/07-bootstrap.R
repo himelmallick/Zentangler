@@ -165,7 +165,7 @@ zentangler_check_bootstrap_success <- function(n_ok, n_req, label = "Bootstrap")
   invisible(NULL)
 }
 
-bootstrap_multiview_fit <- function(blocks, pheno_df, opts, key_ref, bootstrap_repeats, bootstrap_seed, bootstrap_id = NULL) {
+bootstrap_multiview_fit <- function(blocks, pheno_df, opts, key_ref, bootstrap_repeats, bootstrap_seed, bootstrap_id = NULL, verbose = FALSE) {
   # Pipeline bootstrap: every replicate re-runs screening and the outcome model
   # through the same engine as the main fit (point estimates only).
   bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
@@ -180,6 +180,7 @@ bootstrap_multiview_fit <- function(blocks, pheno_df, opts, key_ref, bootstrap_r
   rep_opts[c("b_inference", "causal_inference", "primary_inference", "fdr_joint")] <- list("none", "none", "model_based", "maxp")
   rep_opts$bootstrap_repeats <- 0L
   rep_opts$return_fits <- FALSE
+  rep_opts$verbose <- FALSE
 
   for (b in seq_len(bootstrap_repeats)) {
     bt <- try(make_bootstrap_sample(blocks, pheno_df, bootstrap_id = bootstrap_id, seed = bootstrap_seed + b), silent = TRUE)
@@ -189,10 +190,17 @@ bootstrap_multiview_fit <- function(blocks, pheno_df, opts, key_ref, bootstrap_r
     }
     o_b <- rep_opts
     o_b$seed <- bootstrap_seed + b
-    base_out <- o_b$maaslin2_args$output %||% o_b$maaslin2_args$output_dir
-    if (!is.null(base_out) && nzchar(base_out)) {
-      o_b$maaslin2_args$output_dir <- NULL
-      o_b$maaslin2_args$output <- file.path(base_out, paste0("bootstrap_", b))
+    # Write each replicate's MaAsLin2 output to its own folder.
+    if (!is.null(o_b$a_stage)) {
+      for (v in names(o_b$a_stage$maaslin2_args)) {
+        ma <- o_b$a_stage$maaslin2_args[[v]]
+        base_out <- ma$output %||% ma$output_dir
+        if (!is.null(base_out) && nzchar(base_out)) {
+          ma$output_dir <- NULL
+          ma$output <- file.path(base_out, paste0("bootstrap_", b))
+          o_b$a_stage$maaslin2_args[[v]] <- ma
+        }
+      }
     }
     fit_b <- try(
       suppressMessages(suppressWarnings(zentangler_with_fold_groups(
@@ -218,6 +226,9 @@ bootstrap_multiview_fit <- function(blocks, pheno_df, opts, key_ref, bootstrap_r
     score_mat[b, ] <- s_row
     active_mat[b, ] <- as.numeric(b_row != 0)
     n_ok <- n_ok + 1L
+    if (b %% zentangler_progress_every(bootstrap_repeats) == 0L || b == bootstrap_repeats) {
+      zentangler_log(verbose, sprintf("bootstrap %d / %d (%d succeeded)", b, bootstrap_repeats, n_ok), indent = 1L)
+    }
   }
   zentangler_check_bootstrap_success(n_ok, bootstrap_repeats, "Pipeline bootstrap")
   list(score_matrix = score_mat, b_matrix = b_mat, active_matrix = active_mat,
@@ -236,7 +247,8 @@ bootstrap_effects_fixed_set <- function(
   x1,
   bootstrap_repeats,
   bootstrap_seed,
-  bootstrap_id = NULL
+  bootstrap_id = NULL,
+  verbose = FALSE
 ) {
   bootstrap_repeats <- max(0L, as.integer(bootstrap_repeats))
   if (bootstrap_repeats < 1L) return(NULL)
@@ -273,6 +285,9 @@ bootstrap_effects_fixed_set <- function(
       next
     }
     rows[[length(rows) + 1L]] <- eff_b$effects
+    if (b %% zentangler_progress_every(bootstrap_repeats) == 0L || b == bootstrap_repeats) {
+      zentangler_log(verbose, sprintf("effect bootstrap %d / %d (%d succeeded)", b, bootstrap_repeats, length(rows)), indent = 1L)
+    }
     me <- eff_b$mediator_effects
     if (nrow(me) > 0L) {
       k <- paste(me$omics, me$mediator, sep = "::")

@@ -18,6 +18,8 @@ fit_sequential_zentangler(
   pseudocount = NULL,
   duplicate_primary = c("mean", "first"),
   fill_nonfinite_zero = FALSE,
+  a_stage_model = "lm",
+  maaslin2_args = list(),
   sis_n = 50L,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -46,7 +48,8 @@ fit_sequential_zentangler(
   bootstrap_ci_level = 0.95,
   bootstrap_seed = NULL,
   bootstrap_id = NULL,
-  seed = 1
+  seed = 1,
+  verbose = TRUE
 )
 }
 \arguments{
@@ -70,6 +73,11 @@ fit_sequential_zentangler(
 transformation and pseudocount (see \code{\link[=fit_multiview_parallel_zentangler]{fit_multiview_parallel_zentangler()}}).}
 
 \item{duplicate_primary, fill_nonfinite_zero}{MAE extraction options.}
+
+\item{a_stage_model, maaslin2_args}{A-path model for the first layer (the
+only layer with an exposure -> mediator path): \code{"lm"} or \code{"maaslin2"},
+given once or named by view as in \code{\link[=fit_multiview_parallel_zentangler]{fit_multiview_parallel_zentangler()}};
+entries for other route views are accepted and ignored.}
 
 \item{sis_n, sis_rank, screen_method}{First-layer screen.}
 
@@ -105,6 +113,8 @@ layer is one view) or the supplementary \code{"integrated_learner"}.}
 \item{bootstrap_repeats, bootstrap_ci_level, bootstrap_seed, bootstrap_id}{Bootstrap settings.}
 
 \item{seed}{Random seed (the caller's RNG state is restored on exit).}
+
+\item{verbose}{Print timestamped progress messages.}
 }
 \value{
 An object of class \code{zentangler_sequential_fit}: \code{settings},

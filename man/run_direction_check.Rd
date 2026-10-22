@@ -15,6 +15,7 @@ run_direction_check(
   q_threshold = 0.25,
   return_fits = FALSE,
   seed = 1,
+  verbose = TRUE,
   ...
 )
 }
@@ -38,6 +39,8 @@ inferred as binomial for 0/1 data, otherwise Gaussian.}
 \item{return_fits}{Keep both fits.}
 
 \item{seed}{Base seed.}
+
+\item{verbose}{Log both fits.}
 
 \item{...}{Further fit arguments (applied to both directions; outcome-family
 arguments apply to the forward fit only).}

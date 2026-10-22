@@ -268,3 +268,75 @@ hima_screen_mediators_maaslin2 <- function(
   )
 }
 
+
+# -----------------------------------------------------------------------------
+# Per-view A-stage models
+#
+# a_stage_model is either one model for every view ("lm" or "maaslin2") or a
+# vector named by view, e.g. c(species = "maaslin2", metabolites = "lm");
+# views not named fall back to "lm". maaslin2_args is either one list of
+# Maaslin2() arguments shared by every MaAsLin2 view, or a list named by view
+# whose elements are such lists. Names may be MAE experiment names or the
+# sanitized view names Zentangler uses internally. This only affects the
+# A-path (exposure -> mediator) stage.
+# -----------------------------------------------------------------------------
+
+zentangler_view_name_map <- function(views, view_map = NULL) {
+  # Map experiment names and sanitized names to sanitized view names.
+  map <- setNames(views, views)
+  if (!is.null(view_map) && nrow(view_map) > 0L) {
+    map[as.character(view_map$experiment_name)] <- as.character(view_map$view)
+  }
+  map
+}
+
+zentangler_resolve_a_stage <- function(a_stage_model, maaslin2_args, views, view_map = NULL) {
+  name_map <- zentangler_view_name_map(views, view_map)
+  to_view <- function(nm, label) {
+    bad <- setdiff(nm, names(name_map))
+    if (length(bad) > 0L) stop(label, " names views that are not analysed: ", paste(bad, collapse = ", "), call. = FALSE)
+    unname(name_map[nm])
+  }
+  a_stage_model <- a_stage_model %||% "lm"
+  models <- setNames(rep("lm", length(views)), views)
+  if (is.null(names(a_stage_model))) {
+    if (length(a_stage_model) != 1L) {
+      stop("a_stage_model must be a single model or a vector named by view, e.g. c(species = 'maaslin2', metabolites = 'lm').", call. = FALSE)
+    }
+    models[] <- as.character(a_stage_model)
+  } else {
+    models[to_view(names(a_stage_model), "a_stage_model")] <- as.character(a_stage_model)
+  }
+  bad <- setdiff(unique(models), c("lm", "maaslin2"))
+  if (length(bad) > 0L) stop("Unknown a_stage_model: ", paste(bad, collapse = ", "), ". Use 'lm' or 'maaslin2'.", call. = FALSE)
+
+  maaslin2_args <- as.list(maaslin2_args %||% list())
+  per_view <- length(maaslin2_args) > 0L && !is.null(names(maaslin2_args)) &&
+    all(names(maaslin2_args) %in% names(name_map)) && all(vapply(maaslin2_args, is.list, logical(1)))
+  args_by_view <- setNames(rep(list(list()), length(views)), views)
+  if (per_view) {
+    for (nm in names(maaslin2_args)) args_by_view[[to_view(nm, "maaslin2_args")]] <- maaslin2_args[[nm]]
+  } else {
+    for (v in views) args_by_view[[v]] <- maaslin2_args
+  }
+  random_effects <- unique(unlist(lapply(views[models == "maaslin2"], function(v) as.character(args_by_view[[v]]$random_effects %||% character(0)))))
+  list(model = models, maaslin2_args = args_by_view, random_effects = random_effects)
+}
+
+zentangler_a_stage_screen <- function(view, M, X, C, pheno_df, x_var, covariates, model, maaslin2_args,
+                                      sis_n, rank_by, screen_method, fdr_method) {
+  if (identical(model, "maaslin2")) {
+    ma <- maaslin2_args
+    base_out <- ma$output %||% ma$output_dir
+    ma$output_dir <- NULL
+    ma$output <- if (!is.null(base_out) && nzchar(base_out)) file.path(base_out, paste0("a_stage_", view)) else NULL
+    return(hima_screen_mediators_maaslin2(
+      M = M, pheno_df = pheno_df, x_var = x_var, covariates = covariates,
+      sis_n = sis_n, rank_by = rank_by, screen_method = screen_method,
+      fdr_method = fdr_method, maaslin2_args = ma
+    ))
+  }
+  out <- hima_screen_mediators(M, X, C = C, sis_n = sis_n, rank_by = rank_by, screen_method = screen_method, fdr_method = fdr_method)
+  out$a_stage_model <- "lm"
+  out
+}

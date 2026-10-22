@@ -39,6 +39,31 @@ zentangler_mediators(fit, top = 20)            # top 20 by |a * b|
 zentangler_effects(fit)                     # NDE, NIE, TE, proportion mediated
 ```
 
+### Progress messages and the exposure-outcome check
+
+With `verbose = TRUE` (the default) every fit prints timestamped progress:
+samples and features per view, the A-stage and screening counts per view, the
+chosen `rho` with its cross-validation errors, the B-path and FDR methods, the
+number of active mediators at q <= 0.05 / 0.10 / 0.25, the causal effects,
+and bootstrap or permutation progress. Use `verbose = FALSE` (or
+`suppressMessages()`) to silence it.
+
+Each fit first tests whether the exposure and the outcome are associated
+(`Y ~ X + covariates`: linear, logistic or Cox). The result is logged, shown by
+`print()` and `summary()`, and stored in `fit$diagnostics$exposure_outcome`.
+It is reported, not used as a gate: indirect effects can exist without a
+significant total effect (for example, mediated paths of opposite sign), but
+then the total effect and proportion mediated should be read with care.
+
+```text
+[Zentangler 17:33:07] Exposure-outcome association (linear model, Y ~ X + covariates): coefficient 4.468, p = 1.07e-68; ...
+[Zentangler 17:33:07]   Exposure and outcome are associated (p < 0.05).
+[Zentangler 17:33:07] A-stage (exposure -> mediator) and screening:
+[Zentangler 17:33:07]   species [maaslin2]: 150 features, 17 with p_a < 0.05, 15 screened in
+[Zentangler 17:33:07] Outcome model: multiview cooperative learning (tuning rho by CV) ...
+[Zentangler 17:33:07]   rho chosen = 0.4 (CV error by rho: 0:1.137, 0.2:1.102, 0.4:1.095, ...)
+```
+
 ## The exported functions
 
 | Function | Purpose |
@@ -96,6 +121,24 @@ before feature filtering and screening, and is recorded in
 `fit$settings$mae_view_map`. If you also use MaAsLin2, leave its own
 `transform` at `"NONE"` to avoid transforming twice.
 
+### A-stage models (per view)
+
+`a_stage_model` chooses how the exposure -> mediator path is estimated:
+`"lm"` (default) or `"maaslin2"`. Give one value for every view, or a vector
+named by view to mix models; views you leave out use `"lm"`. Only the A-stage
+changes; screening, the outcome model and inference are the same for all
+views.
+
+```r
+fit <- zentangler(mae, x_var = "X", y_var = "Y",
+                  a_stage_model = c(species = "maaslin2", kos = "maaslin2", metabolites = "lm"),
+                  maaslin2_args = list(random_effects = "SubjectID"))
+```
+
+In the sequential model only the first route layer has an A-path, so only its
+entry is used (`fit$settings$a_stage_model_layer1`). The model used for each
+view is reported in `summary(fit)$views`.
+
 ### MaAsLin2 A-stage
 
 `a_stage_model = "maaslin2"` runs the A-path with `Maaslin2::Maaslin2()`.
@@ -105,6 +148,16 @@ available (`random_effects`, `normalization`, `transform`, `analysis_method`,
 Zentangler supplies the data, adds the exposure and covariates to
 `fixed_effects`, and defaults to no normalization or transformation, `"LM"`
 and no prevalence/abundance filtering.
+
+`maaslin2_args` is either one list shared by every MaAsLin2 view or a list
+named by view, so each view can have its own MaAsLin2 settings:
+
+```r
+maaslin2_args = list(
+  species = list(random_effects = "SubjectID", normalization = "TSS", transform = "LOG"),
+  kos     = list(random_effects = "SubjectID", analysis_method = "LM")
+)
+```
 
 ```r
 fit <- zentangler(mae, x_var = "X", y_var = "Y", covariates = "age",

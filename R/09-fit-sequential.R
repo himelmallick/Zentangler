@@ -240,7 +240,12 @@ zentangler_sequential_core <- function(
   rho_grid = zentangler_default_rho_grid(),
   b_inference = "debiased",
   debias_max_targets = 200L,
-  fdr_method = "BH"
+  fdr_method = "BH",
+  pheno_df = NULL,
+  x_var = NULL,
+  covariates = NULL,
+  a_stage = NULL,
+  verbose = FALSE
 ) {
   # Route discovery + estimation on one dataset. b_inference "none" skips all
   # p-value machinery (bootstrap replicates).
@@ -258,7 +263,12 @@ zentangler_sequential_core <- function(
 
   # 1. Layer-1 screen.
   v1 <- route[[1L]]
-  screen1 <- hima_screen_mediators(data_by_view[[v1]], X = X, C = C, sis_n = sis_n, rank_by = sis_rank, screen_method = screen_method, fdr_method = fdr_method)
+  # Only layer 1 has an A-path; its model may be "lm" or "maaslin2".
+  screen1 <- zentangler_a_stage_screen(
+    view = v1, M = data_by_view[[v1]], X = X, C = C, pheno_df = pheno_df, x_var = x_var, covariates = covariates,
+    model = a_stage$model[[v1]] %||% "lm", maaslin2_args = a_stage$maaslin2_args[[v1]] %||% list(),
+    sis_n = sis_n, rank_by = sis_rank, screen_method = screen_method, fdr_method = fdr_method
+  )
   a_lookup <- data.frame(
     key = zentangler_feature_key(v1, screen1$table$mediator),
     a = screen1$table$a_hat,
@@ -267,6 +277,9 @@ zentangler_sequential_core <- function(
     selected = screen1$table$selected,
     stringsAsFactors = FALSE
   )
+  zentangler_log(verbose, sprintf("Layer 1 (%s) [%s]: %d features, %d with p_a < 0.05, %d screened in",
+                                  v1, a_stage$model[[v1]] %||% "lm", nrow(screen1$table),
+                                  sum(screen1$table$p_a < 0.05, na.rm = TRUE), length(screen1$selected)))
   current <- zentangler_feature_key(v1, screen1$selected)
   ancestors <- setNames(lapply(current, function(k) character(0)), current)
   paths <- as.list(current)
@@ -287,6 +300,8 @@ zentangler_sequential_core <- function(
     )
     links <- scr$links
     n_link_tests <- n_link_tests + scr$n_tests
+    zentangler_log(verbose, sprintf("Transition %d (%s -> %s): %d pairs tested, %d links kept (|r| >= %g, q <= %g)",
+                                    s, route[[s]], to_view, scr$n_tests, nrow(links), min_abs_cor, cor_q_threshold))
     tr_name <- paste0("stage", s, "_to_stage", s + 1L)
     if (nrow(links) == 0L) {
       warn <- c(warn, paste0("No links passed the transition screen ", s, " -> ", s + 1L, "."))
@@ -329,6 +344,7 @@ zentangler_sequential_core <- function(
     }
     current <- unique(vapply(paths, function(p) utils::tail(p, 1L), character(1)))
     ancestors <- new_anc[current]
+    zentangler_log(verbose, sprintf("%d paths so far, %d distinct %s mediators", length(paths), length(current), to_view), indent = 1L)
     if (length(paths) == 0L) break
   }
 
@@ -356,11 +372,15 @@ zentangler_sequential_core <- function(
   })
   names(term_blocks) <- route
   term_blocks <- term_blocks[!vapply(term_blocks, is.null, logical(1))]
+  zentangler_log(verbose, sprintf("Terminal outcome model: %d terminal + %d upstream mediators, %s ...",
+                                  length(terminal_keys), length(upstream_keys),
+                                  if (identical(engine, "multiview")) "multiview (tuning rho by CV)" else paste0("IntegratedLearner-style ", sub("il_", "", engine), " fusion")))
   yfit <- fit_y_multiview_stage(
     Y = Y, X = X, blocks = term_blocks, C = C, engine = engine, y_family = y_family,
     lambda_choice = lambda_choice, glmnet_alpha = glmnet_alpha,
     rho = rho, rho_grid = rho_grid
   )
+  if (!is.null(yfit$rho)) zentangler_log(verbose, sprintf("rho chosen = %g", yfit$rho), indent = 1L)
   coef_all <- unlist(unname(yfit$coef_by_view))
   b_fusion <- setNames(as.numeric(coef_all[terminal_keys]), terminal_keys)
   b_fusion[!is.finite(b_fusion)] <- 0
@@ -474,6 +494,10 @@ zentangler_sequential_core <- function(
 #'   transformation and pseudocount (see [fit_multiview_parallel_zentangler()]).
 #' @param duplicate_primary,fill_nonfinite_zero MAE extraction options.
 #' @param sis_n,sis_rank,screen_method First-layer screen.
+#' @param a_stage_model,maaslin2_args A-path model for the first layer (the
+#'   only layer with an exposure -> mediator path): `"lm"` or `"maaslin2"`,
+#'   given once or named by view as in [fit_multiview_parallel_zentangler()];
+#'   entries for other route views are accepted and ignored.
 #' @param cor_method,min_abs_cor,cor_q_threshold,cor_fdr_method,residualize_links
 #'   Transition-link screen.
 #' @param max_links_per_transition,max_paths Caps (warned when hit).
@@ -493,6 +517,7 @@ zentangler_sequential_core <- function(
 #' @param effect_x0,effect_x1 Exposure contrast for causal effects.
 #' @param bootstrap_repeats,bootstrap_ci_level,bootstrap_seed,bootstrap_id Bootstrap settings.
 #' @param seed Random seed (the caller's RNG state is restored on exit).
+#' @param verbose Print timestamped progress messages.
 #'
 #' @return An object of class `zentangler_sequential_fit`: `settings`,
 #'   `diagnostics`, `paths`, `edges` (retained transition links), `terminals`
@@ -513,6 +538,8 @@ fit_sequential_zentangler <- function(
   pseudocount = NULL,
   duplicate_primary = c("mean", "first"),
   fill_nonfinite_zero = FALSE,
+  a_stage_model = "lm",
+  maaslin2_args = list(),
   sis_n = 50L,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -541,7 +568,8 @@ fit_sequential_zentangler <- function(
   bootstrap_ci_level = 0.95,
   bootstrap_seed = NULL,
   bootstrap_id = NULL,
-  seed = 1
+  seed = 1,
+  verbose = TRUE
 ) {
   start_time <- Sys.time()
   restore_rng <- zentangler_save_rng()
@@ -583,8 +611,10 @@ fit_sequential_zentangler <- function(
     transform = transform, pseudocount = pseudocount
   )
   route <- inputs$view_map$view[match(route_exp, inputs$view_map$experiment_name)]
+  a_stage <- zentangler_resolve_a_stage(a_stage_model, maaslin2_args, route, inputs$view_map)
+  if (!identical(a_stage$model[[route[[1L]]]], "maaslin2")) a_stage$random_effects <- character(0)
 
-  needed <- unique(c(x_var, o$y_var, o$survival_time_var, o$survival_event_var, covariates, bootstrap_id))
+  needed <- unique(c(x_var, o$y_var, o$survival_time_var, o$survival_event_var, covariates, bootstrap_id, a_stage$random_effects))
   al <- align_samples_multiview_blocks(inputs$blocks, inputs$pheno_df, needed_pheno_cols = needed)
   blocks <- al$blocks
   pheno_df <- al$pheno
@@ -592,6 +622,15 @@ fit_sequential_zentangler <- function(
   if (!is.numeric(X)) stop("x_var must be numeric.", call. = FALSE)
   Y <- zentangler_make_outcome(pheno_df, o)
   C <- make_covariate_matrix(pheno_df, covariates)
+  zentangler_log(verbose, sprintf("Sequential mediation: X -> %s -> Y", paste(route, collapse = " -> ")))
+  tr <- inputs$view_map$transform
+  if (any(tr != "none")) zentangler_log(verbose, "Transforms: ", paste(paste0(inputs$view_map$view, " = ", tr)[tr != "none"], collapse = ", "), indent = 1L)
+  zentangler_log(verbose, sprintf("Data: %d of %d samples complete across route views; outcome %s%s.",
+                                  nrow(pheno_df), nrow(inputs$pheno_df), y_family,
+                                  if (length(covariates)) paste0("; covariates: ", paste(covariates, collapse = ", ")) else ""))
+  contrast <- infer_effect_contrast(X, x0 = effect_x0, x1 = effect_x1)
+  exposure_outcome <- zentangler_exposure_outcome_test(Y, X, C, y_family, contrast[["x0"]], contrast[["x1"]])
+  zentangler_log_exposure_outcome(verbose, exposure_outcome)
 
   core_args <- list(
     route = route, y_family = y_family, sis_n = sis_n, sis_rank = match.arg(sis_rank),
@@ -601,18 +640,23 @@ fit_sequential_zentangler <- function(
     max_links_per_transition = max_links_per_transition, max_paths = max_paths,
     lambda_choice = match.arg(lambda_choice), glmnet_alpha = validate_glmnet_alpha(glmnet_alpha),
     engine = engine, rho = rho, rho_grid = rho_grid,
-    debias_max_targets = max(1L, as.integer(debias_max_targets)), fdr_method = fdr_method
+    debias_max_targets = max(1L, as.integer(debias_max_targets)), fdr_method = fdr_method,
+    x_var = x_var, covariates = covariates, a_stage = a_stage
   )
-  core <- zentangler_muffle_cox_ties(do.call(zentangler_sequential_core, c(list(data_by_view = blocks, X = X, Y = Y, C = C, b_inference = b_inference), core_args)))
+  core <- zentangler_muffle_cox_ties(do.call(zentangler_sequential_core, c(list(data_by_view = blocks, X = X, Y = Y, C = C, pheno_df = pheno_df, b_inference = b_inference, verbose = verbose), core_args)))
   for (w in core$warnings) warning(w, call. = FALSE)
   paths <- core$sequential_paths
   terminals <- core$terminal_effects
+  zentangler_log(verbose, sprintf("%d complete paths; terminal B-stage: %s", nrow(paths),
+                                  if (nrow(terminals)) terminals$b_inference_method[[1L]] else "none"))
 
   # Pipeline bootstrap: the whole route discovery is re-run per replicate.
   bootstrap <- list()
   if (bootstrap_repeats > 0L && nrow(paths) > 0L && (needs_boot[["b_inference"]] || needs_boot[["path_inference"]])) {
     if (is.finite(core$terminal_rho %||% NA_real_)) core_args$rho <- core$terminal_rho  # rho fixed in replicates
+    zentangler_log(verbose, sprintf("Pipeline bootstrap: %d replicates ...", bootstrap_repeats))
     boot <- zentangler_bootstrap_sequential_pipeline(
+      verbose = verbose,
       blocks = blocks, pheno_df = pheno_df, X = X, Y = Y, C = C, core_args = core_args,
       path_keys = paths$key_path, terminal_keys = terminals$terminal_key,
       repeats = bootstrap_repeats, seed = bootstrap_seed, bootstrap_id = bootstrap_id
@@ -637,9 +681,12 @@ fit_sequential_zentangler <- function(
   }
   paths$q_primary_global <- NULL
   paths$p_primary_model_based <- NULL
+  if (verbose && nrow(paths) > 0L) {
+    act <- vapply(c(0.05, 0.1, 0.25), function(q) sum(zentangler_is_active(paths, q)), integer(1))
+    zentangler_log(TRUE, sprintf("Active paths: %d at q <= 0.05, %d at q <= 0.10, %d at q <= 0.25", act[1], act[2], act[3]), indent = 1L)
+  }
 
   # Post-selection causal effects for the fixed set of significant paths.
-  contrast <- infer_effect_contrast(X, x0 = effect_x0, x1 = effect_x1)
   data_by_key <- list()
   for (view in route) {
     M <- blocks[[view]]
@@ -652,8 +699,15 @@ fit_sequential_zentangler <- function(
       sequential_paths = effect_paths, Y = Y, X = X, data_by_key = data_by_key, C = C,
       y_family = y_family, x0 = contrast[["x0"]], x1 = contrast[["x1"]], n_layers = length(route)
     )
+    zentangler_log(verbose, sprintf(
+      "Causal effects (%d paths with q <= %g; %s, X %.3g -> %.3g): NDE %.4g, NIE %.4g, TE %.4g, proportion mediated %.3g",
+      nrow(effect_paths), effect_q_threshold, gsub("_", " ", effects$effect_scale[[1L]]), contrast[["x0"]], contrast[["x1"]],
+      effects$nde[[1L]], effects$nie_total[[1L]], effects$te[[1L]], effects$prop_mediated[[1L]]
+    ))
     if (identical(causal_inference, "bootstrap")) {
+      zentangler_log(verbose, sprintf("Causal-effect bootstrap: %d replicates (fixed path set) ...", bootstrap_repeats))
       eb <- zentangler_bootstrap_sequential_effects(
+        verbose = verbose,
         effect_paths = effect_paths, data_by_key = data_by_key, pheno_df = pheno_df, X = X, Y = Y, C = C,
         y_family = y_family, x0 = contrast[["x0"]], x1 = contrast[["x1"]], n_layers = length(route),
         repeats = bootstrap_repeats, seed = bootstrap_seed, bootstrap_id = bootstrap_id
@@ -674,6 +728,7 @@ fit_sequential_zentangler <- function(
     settings = c(core_args, list(
       x_var = x_var, y_var = o$y_var, survival_time_var = o$survival_time_var,
       survival_event_var = o$survival_event_var, covariates = covariates,
+      a_stage_model_layer1 = a_stage$model[[route[[1L]]]],
       b_inference = b_inference,
       b_inference_method = if (nrow(terminals) > 0L) terminals$b_inference_method[[1L]] else NA_character_,
       fusion = fusion, integrated_learner_fusion = integrated_learner_fusion,
@@ -693,6 +748,7 @@ fit_sequential_zentangler <- function(
       n_transition_links = nrow(edges),
       paths_truncated = core$paths_truncated,
       n_upstream_adjusted_in_terminal = length(core$upstream_keys %||% character(0)),
+      exposure_outcome = exposure_outcome,
       bootstrap_successful = c(pipeline = bootstrap$pipeline$repeats_successful %||% NA_integer_, effects = bootstrap$effects$repeats_successful %||% NA_integer_),
       bootstrap_failures = c(bootstrap$pipeline$failures, bootstrap$effects$failures)
     ),
@@ -704,10 +760,11 @@ fit_sequential_zentangler <- function(
     bootstrap = if (length(bootstrap) > 0L) bootstrap else NULL
   )
   class(out) <- c("zentangler_sequential_fit", "list")
+  zentangler_log(verbose, sprintf("Done in %.1f s.", out$diagnostics$runtime_seconds))
   out
 }
 
-zentangler_bootstrap_sequential_pipeline <- function(blocks, pheno_df, X, Y, C, core_args, path_keys, terminal_keys, repeats, seed, bootstrap_id = NULL) {
+zentangler_bootstrap_sequential_pipeline <- function(blocks, pheno_df, X, Y, C, core_args, path_keys, terminal_keys, repeats, seed, bootstrap_id = NULL, verbose = FALSE) {
   if (is.null(seed) || !is.finite(as.numeric(seed))) seed <- 10001L
   seed <- as.integer(seed)
   score_mat <- matrix(NA_real_, nrow = repeats, ncol = length(path_keys), dimnames = list(NULL, path_keys))
@@ -721,12 +778,17 @@ zentangler_bootstrap_sequential_pipeline <- function(blocks, pheno_df, X, Y, C, 
       next
     }
     idx <- bt$idx
+    args_b <- core_args
+    for (v in names(args_b$a_stage$maaslin2_args)) {
+      base_out <- args_b$a_stage$maaslin2_args[[v]]$output
+      if (!is.null(base_out) && nzchar(base_out)) args_b$a_stage$maaslin2_args[[v]]$output <- file.path(base_out, paste0("bootstrap_", b))
+    }
     core_b <- try(suppressWarnings(zentangler_with_fold_groups(bt$fold_group, do.call(
       zentangler_sequential_core,
       c(list(
-        data_by_view = bt$blocks, X = X[idx], Y = zentangler_subset_y(Y, idx),
+        data_by_view = bt$blocks, pheno_df = bt$pheno_df, X = X[idx], Y = zentangler_subset_y(Y, idx),
         C = if (is.null(C)) NULL else C[idx, , drop = FALSE], b_inference = "none"
-      ), core_args)
+      ), args_b)
     ))), silent = TRUE)
     if (inherits(core_b, "try-error")) {
       failures <- c(failures, paste0("bootstrap_", b, ": ", conditionMessage(attr(core_b, "condition"))))
@@ -748,12 +810,15 @@ zentangler_bootstrap_sequential_pipeline <- function(blocks, pheno_df, X, Y, C, 
     score_mat[b, ] <- s_row
     b_mat[b, ] <- b_row
     n_ok <- n_ok + 1L
+    if (b %% zentangler_progress_every(repeats) == 0L || b == repeats) {
+      zentangler_log(verbose, sprintf("bootstrap %d / %d (%d succeeded)", b, repeats, n_ok), indent = 1L)
+    }
   }
   zentangler_check_bootstrap_success(n_ok, repeats, "Sequential pipeline bootstrap")
   list(score_matrix = score_mat, b_matrix = b_mat, repeats_requested = repeats, repeats_successful = n_ok, failures = failures)
 }
 
-zentangler_bootstrap_sequential_effects <- function(effect_paths, data_by_key, pheno_df, X, Y, C, y_family, x0, x1, n_layers, repeats, seed, bootstrap_id = NULL) {
+zentangler_bootstrap_sequential_effects <- function(effect_paths, data_by_key, pheno_df, X, Y, C, y_family, x0, x1, n_layers, repeats, seed, bootstrap_id = NULL, verbose = FALSE) {
   if (is.null(seed) || !is.finite(as.numeric(seed))) seed <- 10001L
   seed <- as.integer(seed) + 500000L
   dummy <- list(.d = matrix(0, nrow = nrow(pheno_df), ncol = 1L, dimnames = list(rownames(pheno_df), ".d")))
@@ -777,6 +842,9 @@ zentangler_bootstrap_sequential_effects <- function(effect_paths, data_by_key, p
       next
     }
     rows[[length(rows) + 1L]] <- eff_b
+    if (b %% zentangler_progress_every(repeats) == 0L || b == repeats) {
+      zentangler_log(verbose, sprintf("effect bootstrap %d / %d (%d succeeded)", b, repeats, length(rows)), indent = 1L)
+    }
   }
   zentangler_check_bootstrap_success(length(rows), repeats, "Sequential causal-effect bootstrap")
   list(effect_decomposition = zentangler_bind_rows_fill(rows), repeats_requested = repeats, repeats_successful = length(rows), failures = failures)

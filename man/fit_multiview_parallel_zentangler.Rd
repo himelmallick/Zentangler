@@ -27,7 +27,7 @@ fit_multiview_parallel_zentangler(
   pseudocount = NULL,
   duplicate_primary = c("mean", "first"),
   fill_nonfinite_zero = FALSE,
-  a_stage_model = c("lm", "maaslin2"),
+  a_stage_model = "lm",
   maaslin2_args = list(),
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
@@ -53,7 +53,8 @@ fit_multiview_parallel_zentangler(
   bootstrap_seed = NULL,
   bootstrap_id = NULL,
   seed = 1,
-  return_fits = FALSE
+  return_fits = FALSE,
+  verbose = TRUE
 )
 }
 \arguments{
@@ -95,12 +96,18 @@ primary sample: \code{"mean"} or \code{"first"}.}
 
 \item{fill_nonfinite_zero}{Replace non-finite assay values by 0.}
 
-\item{a_stage_model}{\code{"lm"} or \code{"maaslin2"}.}
+\item{a_stage_model}{A-path (exposure -> mediator) model: \code{"lm"} or
+\code{"maaslin2"}. One value applies to every view; a vector named by view sets
+each view, e.g. \code{c(species = "maaslin2", metabolites = "lm")} (views not
+named use \code{"lm"}). Only the A-stage is affected.}
 
-\item{maaslin2_args}{Named list passed to \code{Maaslin2::Maaslin2()}: any of its
-arguments (e.g. \code{random_effects}, \code{normalization}, \code{transform},
-\code{analysis_method}, \code{reference}, \code{min_prevalence}, \code{output}). Zentangler
-supplies the data and adds the exposure and covariates to
+\item{maaslin2_args}{Arguments passed to \code{Maaslin2::Maaslin2()} for the
+MaAsLin2 views: any of its arguments (e.g. \code{random_effects},
+\code{normalization}, \code{transform}, \code{analysis_method}, \code{reference},
+\code{min_prevalence}, \code{output}). Either one list shared by all MaAsLin2 views,
+or a list named by view whose elements are such lists, e.g.
+\code{list(species = list(transform = "LOG"), kos = list(normalization = "TSS"))}.
+Zentangler supplies the data and adds the exposure and covariates to
 \code{fixed_effects}; its own defaults are no normalization/transformation, LM,
 and no prevalence/abundance filtering.}
 
@@ -150,6 +157,10 @@ the causal effect stage.}
 \item{seed}{Random seed (the caller's RNG state is restored on exit).}
 
 \item{return_fits}{Keep the fitted outcome model in \code{fit$model}.}
+
+\item{verbose}{Print timestamped progress messages (data, exposure-outcome
+association, A-stage, outcome model, inference, FDR, effects, bootstrap
+progress). Messages go through \code{message()}.}
 }
 \value{
 An object of class \code{zentangler_fit}: \code{settings}, \code{diagnostics},

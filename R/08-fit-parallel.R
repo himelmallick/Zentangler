@@ -35,7 +35,8 @@ zentangler_parallel_options <- function(a) {
   o$exposure_role <- validate_exposure_role(a$exposure_role)
   o$sis_rank <- match.arg(a$sis_rank, c("abs_a", "pvalue"))
   o$screen_method <- match.arg(a$screen_method, c("sis", "none"))
-  o$a_stage_model <- match.arg(a$a_stage_model, c("lm", "maaslin2"))
+  # a_stage_model / maaslin2_args may be per view; they are resolved by
+  # zentangler_resolve_a_stage() once the views are known.
   o$fusion <- match.arg(a$fusion, c("multiview", "integrated_learner"))
   o$integrated_learner_fusion <- match.arg(a$integrated_learner_fusion, c("late", "early"))
   o$engine <- zentangler_resolve_fusion(o$fusion, o$integrated_learner_fusion)
@@ -51,7 +52,6 @@ zentangler_parallel_options <- function(a) {
   o$bootstrap_repeats <- max(0L, as.integer(a$bootstrap_repeats))
   o$debias_max_targets <- max(1L, as.integer(a$debias_max_targets))
   o$maaslin2_args <- as.list(a$maaslin2_args %||% list())
-  o$maaslin2_random_effects <- as.character(o$maaslin2_args$random_effects %||% character(0))
   if (identical(o$y_family, "survival")) {
     o$survival_time_var <- zentangler_require_string(a$survival_time_var, "survival_time_var (y_family = 'survival')")
     o$survival_event_var <- zentangler_require_string(a$survival_event_var, "survival_event_var (y_family = 'survival')")
@@ -106,11 +106,17 @@ zentangler_parallel_options <- function(a) {
 #'   `c(species = "clr", metabolites = "log")`.
 #' @param pseudocount Pseudocount for `"log"` / `"clr"` (single value or named
 #'   by view); default half the smallest positive value of each view.
-#' @param a_stage_model `"lm"` or `"maaslin2"`.
-#' @param maaslin2_args Named list passed to `Maaslin2::Maaslin2()`: any of its
-#'   arguments (e.g. `random_effects`, `normalization`, `transform`,
-#'   `analysis_method`, `reference`, `min_prevalence`, `output`). Zentangler
-#'   supplies the data and adds the exposure and covariates to
+#' @param a_stage_model A-path (exposure -> mediator) model: `"lm"` or
+#'   `"maaslin2"`. One value applies to every view; a vector named by view sets
+#'   each view, e.g. `c(species = "maaslin2", metabolites = "lm")` (views not
+#'   named use `"lm"`). Only the A-stage is affected.
+#' @param maaslin2_args Arguments passed to `Maaslin2::Maaslin2()` for the
+#'   MaAsLin2 views: any of its arguments (e.g. `random_effects`,
+#'   `normalization`, `transform`, `analysis_method`, `reference`,
+#'   `min_prevalence`, `output`). Either one list shared by all MaAsLin2 views,
+#'   or a list named by view whose elements are such lists, e.g.
+#'   `list(species = list(transform = "LOG"), kos = list(normalization = "TSS"))`.
+#'   Zentangler supplies the data and adds the exposure and covariates to
 #'   `fixed_effects`; its own defaults are no normalization/transformation, LM,
 #'   and no prevalence/abundance filtering.
 #' @param sis_n Mediators kept per view by the screen (default `n / log(n)`).
@@ -140,6 +146,9 @@ zentangler_parallel_options <- function(a) {
 #'   Bootstrap replicates, interval level, seed and optional cluster column.
 #' @param seed Random seed (the caller's RNG state is restored on exit).
 #' @param return_fits Keep the fitted outcome model in `fit$model`.
+#' @param verbose Print timestamped progress messages (data, exposure-outcome
+#'   association, A-stage, outcome model, inference, FDR, effects, bootstrap
+#'   progress). Messages go through `message()`.
 #'
 #' @return An object of class `zentangler_fit`: `settings`, `diagnostics`,
 #'   `mediators` (one row per feature), `views` (per-view screens), `effects`
@@ -169,7 +178,7 @@ fit_multiview_parallel_zentangler <- function(
   pseudocount = NULL,
   duplicate_primary = c("mean", "first"),
   fill_nonfinite_zero = FALSE,
-  a_stage_model = c("lm", "maaslin2"),
+  a_stage_model = "lm",
   maaslin2_args = list(),
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
@@ -195,7 +204,8 @@ fit_multiview_parallel_zentangler <- function(
   bootstrap_seed = NULL,
   bootstrap_id = NULL,
   seed = 1,
-  return_fits = FALSE
+  return_fits = FALSE,
+  verbose = TRUE
 ) {
   args <- mget(setdiff(names(formals()), "mae"), envir = environment())
   opts <- zentangler_parallel_options(args)
@@ -208,6 +218,14 @@ fit_multiview_parallel_zentangler <- function(
     transform = transform,
     pseudocount = pseudocount
   )
+  opts$a_stage <- zentangler_resolve_a_stage(opts$a_stage_model, opts$maaslin2_args, names(inputs$blocks), inputs$view_map)
+  if (isTRUE(verbose)) {
+    zentangler_log(TRUE, "Parallel mediation: ", length(inputs$blocks), " view(s) from the MultiAssayExperiment.")
+    tr <- inputs$view_map$transform
+    if (any(tr != "none")) {
+      zentangler_log(TRUE, "Transforms: ", paste(paste0(inputs$view_map$view, " = ", tr)[tr != "none"], collapse = ", "), indent = 1L)
+    }
+  }
   fit <- zentangler_muffle_cox_ties(zentangler_parallel_engine(inputs$blocks, inputs$pheno_df, opts))
   fit$settings$mae_view_map <- inputs$view_map
   fit
@@ -231,7 +249,7 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
   x_var <- design$x_var
   covariates <- design$covariates
 
-  needed <- unique(c(x_var, o$y_var, o$survival_time_var, o$survival_event_var, covariates, o$bootstrap_id, o$maaslin2_random_effects))
+  needed <- unique(c(x_var, o$y_var, o$survival_time_var, o$survival_event_var, covariates, o$bootstrap_id, o$a_stage$random_effects))
   al <- align_samples_multiview_blocks(blocks, design$pheno_df, needed_pheno_cols = needed)
   B <- al$blocks
   views <- names(B)
@@ -239,26 +257,41 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
   Y <- zentangler_make_outcome(al$pheno, o)
   if (!is.numeric(X)) stop("The exposure must be numeric.", call. = FALSE)
   C <- make_covariate_matrix(al$pheno, covariates)
+  verbose <- isTRUE(o$verbose)
+  zentangler_log(verbose, sprintf(
+    "Data: %d of %d samples complete across views; outcome %s; exposure %s%s.",
+    length(al$sample_ids), nrow(pheno_df), o$y_family,
+    if (identical(o$study_design, "standard")) x_var else paste0(o$study_design, " indicator"),
+    if (length(covariates)) paste0("; covariates: ", paste(covariates, collapse = ", ")) else ""
+  ))
+  for (v in views) zentangler_log(verbose, sprintf("%s: %d features after filtering", v, ncol(B[[v]])), indent = 1L)
+
+  # Total-effect check (reported, not used as a gate).
+  contrast <- infer_effect_contrast(X, x0 = design$effect_x0, x1 = design$effect_x1)
+  exposure_outcome <- if (isTRUE(skip_effects)) NULL else zentangler_exposure_outcome_test(Y, X, C, o$y_family, contrast[["x0"]], contrast[["x1"]])
+  zentangler_log_exposure_outcome(verbose, exposure_outcome)
 
   # A-stage and screening.
+  a_stage <- o$a_stage %||% zentangler_resolve_a_stage(o$a_stage_model, o$maaslin2_args, views)
   screens <- lapply(views, function(v) {
-    if (identical(o$a_stage_model, "maaslin2")) {
-      ma <- o$maaslin2_args
-      base_out <- ma$output %||% ma$output_dir
-      ma$output_dir <- NULL
-      ma$output <- if (!is.null(base_out) && nzchar(base_out)) file.path(base_out, paste0("a_stage_", v)) else NULL
-      hima_screen_mediators_maaslin2(
-        M = B[[v]], pheno_df = al$pheno, x_var = x_var, covariates = covariates,
-        sis_n = o$sis_n, rank_by = o$sis_rank, screen_method = o$screen_method,
-        fdr_method = o$fdr_method, maaslin2_args = ma
-      )
-    } else {
-      hima_screen_mediators(B[[v]], X, C = C, sis_n = o$sis_n, rank_by = o$sis_rank, screen_method = o$screen_method, fdr_method = o$fdr_method)
-    }
+    zentangler_a_stage_screen(
+      view = v, M = B[[v]], X = X, C = C, pheno_df = al$pheno, x_var = x_var, covariates = covariates,
+      model = a_stage$model[[v]], maaslin2_args = a_stage$maaslin2_args[[v]],
+      sis_n = o$sis_n, rank_by = o$sis_rank, screen_method = o$screen_method, fdr_method = o$fdr_method
+    )
   })
   names(screens) <- views
   selected <- lapply(views, function(v) B[[v]][, screens[[v]]$selected, drop = FALSE])
   names(selected) <- views
+  zentangler_log(verbose, "A-stage (exposure -> mediator) and screening:")
+  for (v in views) {
+    st <- screens[[v]]$table
+    zentangler_log(verbose, sprintf(
+      "%s [%s]: %d features, %d with p_a < 0.05, %d screened in",
+      v, a_stage$model[[v]], nrow(st), sum(st$p_a < 0.05, na.rm = TRUE), length(screens[[v]]$selected)
+    ), indent = 1L)
+  }
+  zentangler_log(verbose, "Outcome model: ", if (identical(o$engine, "multiview")) "multiview cooperative learning (tuning rho by CV)" else paste0("IntegratedLearner-style ", sub("il_", "", o$engine), " fusion"), " ...")
 
   # Outcome model and B-path inference.
   yfit <- fit_y_multiview_stage(
@@ -266,6 +299,16 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
     lambda_choice = o$lambda_choice, glmnet_alpha = o$glmnet_alpha,
     rho = o$rho, rho_grid = o$rho_grid
   )
+  if (verbose) {
+    if (!is.null(yfit$fit$cv)) {
+      cvt <- yfit$fit$cv
+      zentangler_log(TRUE, sprintf("rho chosen = %g (CV error by rho: %s)", yfit$rho, paste(sprintf("%g:%.4g", cvt$rho, cvt$cv_min), collapse = ", ")), indent = 1L)
+    }
+    zentangler_log(TRUE, sprintf("%d of %d screened mediators have non-zero outcome-model coefficients",
+                                 sum(vapply(yfit$coef_by_view, function(b) sum(b != 0), numeric(1))),
+                                 sum(vapply(selected, ncol, integer(1)))), indent = 1L)
+    zentangler_log(TRUE, "B-path inference: ", if (identical(o$b_inference, "debiased")) "de-biased lasso ..." else "full-pipeline bootstrap ...")
+  }
   b_infer <- infer_p_b_multiview(
     Y = Y, X = X, blocks = selected, C = C, y_family = o$y_family, method = o$b_inference,
     lambda_choice = o$lambda_choice, max_debias_targets = o$debias_max_targets,
@@ -306,7 +349,10 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
     rep_opts[c("x_var", "covariates", "study_design")] <- list(x_var, covariates, "standard")
     rep_opts$rho <- yfit$rho %||% o$rho  # rho fixed at its full-data CV value
     rep_opts$bootstrap_id <- NULL
+    rep_opts$verbose <- FALSE
+    zentangler_log(verbose, sprintf("Pipeline bootstrap: %d replicates (rho fixed at %s) ...", o$bootstrap_repeats, format(yfit$rho %||% NA)))
     boot <- bootstrap_multiview_fit(
+      verbose = verbose,
       blocks = B, pheno_df = al$pheno, opts = rep_opts,
       key_ref = paste(tab$omics, tab$mediator, sep = "::"),
       bootstrap_repeats = o$bootstrap_repeats, bootstrap_seed = o$bootstrap_seed, bootstrap_id = o$bootstrap_id
@@ -328,17 +374,29 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
     joint_ok = !identical(o$primary_inference, "bootstrap_score")
   )
   fdr_joint_used <- attr(tab, "fdr_joint_used")
+  if (verbose) {
+    zentangler_log(TRUE, sprintf("%d mediators tested in the B-stage (%s); FDR over %d features (%s, %s scope).",
+                                 sum(tab$tested_b_stage), b_infer$method, nrow(tab), fdr_joint_used, o$fdr_scope))
+    act <- vapply(c(0.05, 0.1, 0.25), function(q) sum(zentangler_is_active(tab, q)), integer(1))
+    zentangler_log(TRUE, sprintf("Active mediators: %d at q <= 0.05, %d at q <= 0.10, %d at q <= 0.25", act[1], act[2], act[3]), indent = 1L)
+  }
 
   # Post-selection causal effects.
-  contrast <- infer_effect_contrast(X, x0 = design$effect_x0, x1 = design$effect_x1)
   effects <- data.frame()
   if (!isTRUE(skip_effects)) {
     effect_set <- zentangler_effect_set(tab, q_threshold = o$effect_q_threshold)
     eff <- compute_effect_decomposition_multiview(effect_set, Y, X, B, C, o$y_family, contrast[["x0"]], contrast[["x1"]])
     effects <- eff$effects
     tab <- add_mediator_effect_columns(tab, effects, eff$mediator_effects)
+    zentangler_log(verbose, sprintf(
+      "Causal effects (%d mediators with q <= %g; %s, X %.3g -> %.3g): NDE %.4g, NIE %.4g, TE %.4g, proportion mediated %.3g",
+      nrow(effect_set), o$effect_q_threshold, gsub("_", " ", effects$effect_scale[[1L]]),
+      contrast[["x0"]], contrast[["x1"]], effects$nde[[1L]], effects$nie_total[[1L]], effects$te[[1L]], effects$prop_mediated[[1L]]
+    ))
     if (identical(o$causal_inference, "bootstrap")) {
+      zentangler_log(verbose, sprintf("Causal-effect bootstrap: %d replicates (fixed mediator set) ...", o$bootstrap_repeats))
       eb <- bootstrap_effects_fixed_set(
+        verbose = verbose,
         blocks = B, pheno_df = al$pheno, X = X, Y = Y, C = C, effect_set = effect_set,
         y_family = o$y_family, x0 = contrast[["x0"]], x1 = contrast[["x1"]],
         bootstrap_repeats = o$bootstrap_repeats, bootstrap_seed = o$bootstrap_seed, bootstrap_id = o$bootstrap_id
@@ -354,7 +412,7 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
   end_time <- Sys.time()
   settings <- o
   settings[c("x_var", "covariates")] <- list(x_var, covariates)
-  settings <- c(settings, list(
+  settings <- utils::modifyList(settings, list(
     design_info = design$design_info,
     view_names = views,
     effect_x0 = contrast[["x0"]],
@@ -378,16 +436,18 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
       y_model_nonzero = vapply(views, function(v) sum(tab$b_fusion[tab$omics == v] != 0), integer(1)),
       n_b_stage_tested = sum(tab$tested_b_stage),
       n_fdr_tests = nrow(tab),
+      exposure_outcome = exposure_outcome,
       bootstrap_successful = c(pipeline = bootstrap$pipeline$repeats_successful %||% NA_integer_, effects = bootstrap$effects$repeats_successful %||% NA_integer_),
       bootstrap_failures = c(bootstrap$pipeline$failures, bootstrap$effects$failures)
     ),
     mediators = tab,
-    views = lapply(screens, function(s) list(screen = s$table, selected = s$selected)),
+    views = lapply(screens, function(s) list(a_stage_model = s$a_stage_model %||% "lm", screen = s$table, selected = s$selected)),
     effects = effects,
     bootstrap = if (length(bootstrap) > 0L) bootstrap else NULL,
     model = if (isTRUE(o$return_fits)) yfit else NULL
   )
   class(out) <- c("zentangler_fit", "list")
+  zentangler_log(verbose, sprintf("Done in %.1f s.", out$diagnostics$runtime_seconds))
   out
 }
 

@@ -96,13 +96,15 @@ zentangler_run_fit <- function(mae, x_var, y_var, model, route, seed, dots) {
 #' @param q_threshold q-value cutoff defining active mediators/paths.
 #' @param seed Base seed.
 #' @param return_null_fits Keep the permuted fits.
+#' @param verbose Log the observed fit and permutation progress; permuted
+#'   fits themselves run quietly.
 #' @param ... Further arguments for [zentangler()].
 #' @return A list with `observed_fit`, `observed_summary`, `null_summaries`,
 #'   `empirical_summary` (permutation p-values for the number of discoveries,
 #'   the best q-value and the largest score) and `empirical_units`
 #'   (per-mediator or per-path null selection frequency and score p-value).
 #' @export
-run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel", "sequential"), route = NULL, n_perm = 100L, q_threshold = 0.25, seed = 1, return_null_fits = FALSE, ...) {
+run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel", "sequential"), route = NULL, n_perm = 100L, q_threshold = 0.25, seed = 1, return_null_fits = FALSE, verbose = TRUE, ...) {
   model <- zentangler_resolve_model(model, route, missing(model))
   n_perm <- as.integer(n_perm)
   if (length(n_perm) != 1L || is.na(n_perm) || n_perm < 1L) stop("n_perm must be a single integer >= 1.", call. = FALSE)
@@ -116,14 +118,15 @@ run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel"
   views <- if (identical(model, "parallel")) dots$view_names else zentangler_resolve_route(route, mae)
   eligible <- zentangler_eligible_sample_ids(mae, c(x_var, perm_vars, dots$covariates, dots$bootstrap_id), views)
 
-  observed_fit <- zentangler_run_fit(mae, x_var, y_var, model, route, as.integer(seed), dots)
+  zentangler_log(verbose, sprintf("Negative controls (%s model): observed fit, then %d outcome permutations among %d samples.", model, n_perm, length(eligible)))
+  observed_fit <- zentangler_run_fit(mae, x_var, y_var, model, route, as.integer(seed), c(dots, list(verbose = verbose)))
   obs_units <- zentangler_fit_units(observed_fit, q_threshold)
   null_rows <- list()
   null_units <- list()
   null_fits <- list()
   for (i in seq_len(n_perm)) {
     mae_null <- zentangler_permute_outcome(mae, perm_vars, eligible, as.integer(seed) + 100000L + i)
-    fit_i <- try(suppressWarnings(zentangler_run_fit(mae_null, x_var, y_var, model, route, as.integer(seed) + i, dots)), silent = TRUE)
+    fit_i <- try(suppressWarnings(zentangler_run_fit(mae_null, x_var, y_var, model, route, as.integer(seed) + i, c(dots, list(verbose = FALSE)))), silent = TRUE)
     if (inherits(fit_i, "try-error")) {
       warning("Permutation ", i, " failed: ", conditionMessage(attr(fit_i, "condition")), call. = FALSE)
       next
@@ -132,6 +135,9 @@ run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel"
     null_rows[[length(null_rows) + 1L]] <- cbind(perm_id = i, zentangler_unit_summary(u))
     if (nrow(u)) null_units[[length(null_units) + 1L]] <- cbind(perm_id = i, u)
     if (isTRUE(return_null_fits)) null_fits[[as.character(i)]] <- fit_i
+    if (i %% zentangler_progress_every(n_perm) == 0L || i == n_perm) {
+      zentangler_log(verbose, sprintf("permutation %d / %d (%d succeeded)", i, n_perm, length(null_rows)), indent = 1L)
+    }
   }
   null_summaries <- zentangler_bind_rows_fill(null_rows)
   null_units <- zentangler_bind_rows_fill(null_units)
@@ -161,6 +167,10 @@ run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel"
     }, numeric(1))
   }
 
+  zentangler_log(verbose, sprintf(
+    "Observed %d active (q <= %g) vs %.2f on average under permutation; permutation p = %s.",
+    obs$n_active, q_threshold, empirical_summary$null_mean_n_active, zentangler_fmt_p(empirical_summary$p_n_active)
+  ))
   out <- list(
     observed_fit = observed_fit,
     observed_summary = obs,
@@ -193,6 +203,7 @@ run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel"
 #' @param q_threshold q-value cutoff for active units.
 #' @param return_fits Keep both fits.
 #' @param seed Base seed.
+#' @param verbose Log both fits.
 #' @param ... Further fit arguments (applied to both directions; outcome-family
 #'   arguments apply to the forward fit only).
 #' @return A list with `summary` (one row per direction), `comparison` and
@@ -200,7 +211,7 @@ run_negative_controls <- function(mae, x_var, y_var = NULL, model = c("parallel"
 #' @export
 run_direction_check <- function(mae, forward_x, forward_y, model = c("parallel", "sequential"), route = NULL,
                                 reverse_route = c("same_order", "reverse_order"), reverse_y_family = NULL,
-                                q_threshold = 0.25, return_fits = FALSE, seed = 1, ...) {
+                                q_threshold = 0.25, return_fits = FALSE, seed = 1, verbose = TRUE, ...) {
   model <- zentangler_resolve_model(model, route, missing(model))
   q_threshold <- max(zentangler_clean_q_thresholds(q_threshold))
   reverse_route <- match.arg(reverse_route)
@@ -215,10 +226,11 @@ run_direction_check <- function(mae, forward_x, forward_y, model = c("parallel",
   rev_route <- if (!is.null(route) && identical(reverse_route, "reverse_order")) rev(route) else route
   reverse_dots <- dots[setdiff(names(dots), c("y_family", "survival_time_var", "survival_event_var"))]
 
-  fits <- list(
-    forward = zentangler_run_fit(mae, forward_x, forward_y, model, route, as.integer(seed), dots),
-    reverse = zentangler_run_fit(mae, forward_y, forward_x, model, rev_route, as.integer(seed) + 1L, c(reverse_dots, list(y_family = reverse_y_family)))
-  )
+  zentangler_log(verbose, sprintf("Direction check, forward fit: %s -> mediators -> %s", forward_x, forward_y))
+  fit_fwd <- zentangler_run_fit(mae, forward_x, forward_y, model, route, as.integer(seed), c(dots, list(verbose = verbose)))
+  zentangler_log(verbose, sprintf("Direction check, reverse fit: %s -> mediators -> %s (%s outcome)", forward_y, forward_x, reverse_y_family))
+  fit_rev <- zentangler_run_fit(mae, forward_y, forward_x, model, rev_route, as.integer(seed) + 1L, c(reverse_dots, list(y_family = reverse_y_family, verbose = verbose)))
+  fits <- list(forward = fit_fwd, reverse = fit_rev)
   units <- lapply(fits, zentangler_fit_units, q_threshold = q_threshold)
   summary_tab <- do.call(rbind, lapply(names(fits), function(d) {
     eff <- zentangler_effects(fits[[d]])
@@ -252,6 +264,8 @@ run_direction_check <- function(mae, forward_x, forward_y, model = c("parallel",
     direction_preference = preference,
     stringsAsFactors = FALSE
   )
+  zentangler_log(verbose, sprintf("Direction check: forward %d vs reverse %d active; preference: %s.",
+                                  f$n_active, r$n_active, preference))
   out <- list(
     summary = summary_tab,
     comparison = comparison,

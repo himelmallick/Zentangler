@@ -14,6 +14,7 @@ run_negative_controls(
   q_threshold = 0.25,
   seed = 1,
   return_null_fits = FALSE,
+  verbose = TRUE,
   ...
 )
 }
@@ -36,6 +37,9 @@ run_negative_controls(
 \item{seed}{Base seed.}
 
 \item{return_null_fits}{Keep the permuted fits.}
+
+\item{verbose}{Log the observed fit and permutation progress; permuted
+fits themselves run quietly.}
 
 \item{...}{Further arguments for \code{\link[=zentangler]{zentangler()}}.}
 }

@@ -518,3 +518,58 @@ prefix_multiview_blocks <- function(blocks) {
 
   list(X = do.call(cbind, mats), map = do.call(rbind, map))
 }
+
+# -----------------------------------------------------------------------------
+# Logging (verbose = TRUE)
+# -----------------------------------------------------------------------------
+
+zentangler_log <- function(verbose, ..., indent = 0L) {
+  # Timestamped progress messages through message(), so they can be silenced
+  # with verbose = FALSE or suppressMessages().
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  message(sprintf("[Zentangler %s] ", format(Sys.time(), "%H:%M:%S")), strrep("  ", indent), ...)
+  invisible(NULL)
+}
+
+zentangler_fmt_p <- function(p) {
+  if (!is.finite(p)) return("NA")
+  trimws(if (p < 1e-4) formatC(p, format = "e", digits = 2) else formatC(p, format = "g", digits = 3))
+}
+
+zentangler_progress_every <- function(n) max(1L, as.integer(ceiling(n / 10)))
+
+zentangler_exposure_outcome_test <- function(Y, X, C, y_family, x0, x1) {
+  # Total-effect check before mediation: Y ~ X + covariates (lm / logistic /
+  # Cox). Mediation can exist without a significant total effect (e.g. paths
+  # of opposite sign), so this is reported, not used as a gate.
+  r <- estimate_reduced_x_summary(Y = Y, X = X, C = C, y_family = y_family, x0 = x0, x1 = x1)
+  p <- r$p_reduced_total_effect[[1L]]
+  data.frame(
+    model = switch(y_family, gaussian = "linear", binomial = "logistic", survival = "Cox"),
+    n = length(as.numeric(X)),
+    n_covariates = if (is.null(C)) 0L else ncol(C),
+    coefficient = r$reduced_total_effect_coefficient[[1L]],
+    p_value = p,
+    effect = r$reduced_total_effect[[1L]],
+    effect_scale = switch(y_family, gaussian = "mean_difference", binomial = "risk_difference", survival = "log_hazard_ratio"),
+    x0 = x0,
+    x1 = x1,
+    associated_p05 = is.finite(p) && p < 0.05,
+    stringsAsFactors = FALSE
+  )
+}
+
+zentangler_log_exposure_outcome <- function(verbose, eo) {
+  if (!isTRUE(verbose) || is.null(eo) || nrow(eo) == 0L) return(invisible(NULL))
+  zentangler_log(verbose, sprintf(
+    "Exposure-outcome association (%s model, Y ~ X%s): coefficient %.4g, p = %s; effect of X %.3g -> %.3g = %.4g (%s).",
+    eo$model, if (eo$n_covariates > 0L) " + covariates" else "", eo$coefficient, zentangler_fmt_p(eo$p_value),
+    eo$x0, eo$x1, eo$effect, gsub("_", " ", eo$effect_scale)
+  ))
+  if (isTRUE(eo$associated_p05)) {
+    zentangler_log(verbose, "Exposure and outcome are associated (p < 0.05).", indent = 1L)
+  } else {
+    zentangler_log(verbose, "Exposure and outcome are NOT significantly associated (p >= 0.05). Indirect effects can still exist (e.g. mediated paths of opposite sign), but interpret the total effect and proportion mediated with care.", indent = 1L)
+  }
+  invisible(NULL)
+}

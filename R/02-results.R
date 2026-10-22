@@ -103,7 +103,7 @@ summary.zentangler_fit <- function(object, q_threshold = 0.25, top = 20L, ...) {
   q_main <- max(zentangler_clean_q_thresholds(q_threshold))
   tab <- object$mediators
   s <- object$settings
-  views <- unique(tab$omics)
+  views <- intersect(s$view_names %||% unique(tab$omics), unique(tab$omics))
   out <- list(
     model = data.frame(
       n_samples = object$diagnostics$n_samples,
@@ -123,7 +123,8 @@ summary.zentangler_fit <- function(object, q_threshold = 0.25, top = 20L, ...) {
     views = do.call(rbind, lapply(views, function(v) {
       d <- tab[tab$omics == v, , drop = FALSE]
       data.frame(
-        omics = v, n_features = nrow(d), n_screened = sum(d$selected_by_screen),
+        omics = v, a_stage_model = object$views[[v]]$a_stage_model %||% "lm",
+        n_features = nrow(d), n_screened = sum(d$selected_by_screen),
         n_active = sum(zentangler_is_active(d, q_main)),
         min_q = suppressWarnings(min(d$q_primary, na.rm = TRUE)),
         stringsAsFactors = FALSE
@@ -132,6 +133,7 @@ summary.zentangler_fit <- function(object, q_threshold = 0.25, top = 20L, ...) {
     thresholds = zentangler_threshold_counts(tab, q_threshold, "score"),
     top = zentangler_mediators(object, top = top),
     active = zentangler_mediators(object, q_threshold = q_main),
+    exposure_outcome = object$diagnostics$exposure_outcome,
     effects = zentangler_effects(object),
     interpretation = zentangler_interpret_effect_row(object$effects)
   )
@@ -163,6 +165,7 @@ summary.zentangler_sequential_fit <- function(object, q_threshold = 0.25, top = 
     active = if (nrow(paths) > 0L) zentangler_paths(object, q_threshold = q_main) else data.frame(),
     edges = object$edges,
     terminals = object$terminals,
+    exposure_outcome = object$diagnostics$exposure_outcome,
     effects = zentangler_effects(object),
     interpretation = zentangler_interpret_effect_row(object$effects)
   )
@@ -175,6 +178,13 @@ zentangler_fusion_label <- function(s) {
     return(paste0("integrated_learner (", s$integrated_learner_fusion, ")"))
   }
   if (is.finite(s$rho_used %||% NA_real_)) sprintf("multiview (rho = %g)", s$rho_used) else "multiview"
+}
+
+zentangler_print_exposure_outcome <- function(eo) {
+  if (is.null(eo) || !is.data.frame(eo) || nrow(eo) == 0L) return(invisible(NULL))
+  cat(sprintf("Exposure-outcome association (%s, Y ~ X%s): coefficient %.4g, p = %s%s\n",
+              eo$model, if (eo$n_covariates > 0L) " + covariates" else "", eo$coefficient,
+              zentangler_fmt_p(eo$p_value), if (isTRUE(eo$associated_p05)) "" else "  [not significant]"))
 }
 
 zentangler_print_effects <- function(eff) {
@@ -195,6 +205,7 @@ print.zentangler_fit <- function(x, q_threshold = 0.25, ...) {
   cat(sprintf("  outcome: %s | outcome model: %s | b: %s | FDR: %s\n",
               s$y_family, zentangler_fusion_label(s), s$b_inference, s$fdr_joint_used))
   cat(sprintf("  active mediators at q <= %g: %d\n", q_threshold, sum(zentangler_is_active(tab, q_threshold))))
+  zentangler_print_exposure_outcome(x$diagnostics$exposure_outcome)
   zentangler_print_effects(x$effects)
   invisible(x)
 }
@@ -209,6 +220,7 @@ print.zentangler_sequential_fit <- function(x, q_threshold = 0.25, ...) {
               s$y_family, zentangler_fusion_label(s), s$b_inference))
   n_act <- if (nrow(paths) > 0L) sum(zentangler_is_active(paths, q_threshold)) else 0L
   cat(sprintf("  %d paths, %d active at q <= %g\n", nrow(paths), n_act, q_threshold))
+  zentangler_print_exposure_outcome(x$diagnostics$exposure_outcome)
   zentangler_print_effects(x$effects)
   invisible(x)
 }
@@ -226,8 +238,11 @@ print.summary.zentangler_fit <- function(x, ...) {
     cols <- intersect(c("omics", "mediator", "a", "b", "score", "indirect_effect", "q_primary"), colnames(x$active))
     print(utils::head(x$active[, cols, drop = FALSE], 20L), row.names = FALSE)
   }
-  if (nrow(x$effects) > 0L) {
+  if (!is.null(x$exposure_outcome)) {
     cat("\n")
+    zentangler_print_exposure_outcome(x$exposure_outcome)
+  }
+  if (nrow(x$effects) > 0L) {
     zentangler_print_effects(x$effects)
     cat(x$interpretation, "\n")
   }
@@ -247,8 +262,11 @@ print.summary.zentangler_sequential_fit <- function(x, ...) {
     cols <- intersect(c("mediator_path", "a", "d_product", "b", "sequential_score", "q_primary"), colnames(x$active))
     print(utils::head(x$active[, cols, drop = FALSE], 20L), row.names = FALSE)
   }
-  if (nrow(x$effects) > 0L) {
+  if (!is.null(x$exposure_outcome)) {
     cat("\n")
+    zentangler_print_exposure_outcome(x$exposure_outcome)
+  }
+  if (nrow(x$effects) > 0L) {
     zentangler_print_effects(x$effects)
     cat(x$interpretation, "\n")
   }
