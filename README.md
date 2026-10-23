@@ -20,6 +20,8 @@ remotes::install_github("himelmallick/Zentangler")
 ```
 
 Zentangler uses `multiview` (cooperative learning), which needs `glmnet >= 5.0`.
+The optional A-stage models need `Maaslin2` (Bioconductor) or
+`Tweedieverse` (`remotes::install_github("himelmallick/Tweedieverse")`).
 
 ## Quick start
 
@@ -83,7 +85,8 @@ then the total effect and proportion mediated should be read with care.
 1. **Align** samples across views (`MultiAssayExperiment` sample map) and the
    phenotype data in `colData(mae)`, optionally log- or CLR-transforming views.
 2. **A-path** for every feature: `M_j ~ X + covariates` (`a_stage_model = "lm"`,
-   or `"maaslin2"` with any MaAsLin2 option, e.g. random effects).
+   `"maaslin2"` or `"tweedieverse"`, each with all of its options, e.g.
+   random effects).
 3. **Screen** the top `sis_n` features per view by standardized `|a|`
    (`sis_rank = "pvalue"` ranks by p-value; `screen_method = "none"` keeps all).
 4. **Outcome model** `Y ~ X + covariates + screened mediators` with multiview
@@ -124,16 +127,34 @@ before feature filtering and screening, and is recorded in
 ### A-stage models (per view)
 
 `a_stage_model` chooses how the exposure -> mediator path is estimated:
-`"lm"` (default) or `"maaslin2"`. Give one value for every view, or a vector
-named by view to mix models; views you leave out use `"lm"`. Only the A-stage
-changes; screening, the outcome model and inference are the same for all
-views.
+`"lm"` (default), `"maaslin2"` or `"tweedieverse"`. Give one value for every
+view, or a vector named by view to mix models; views you leave out use `"lm"`.
+Only the A-stage (screening and `p_a`) changes; the outcome model, inference
+and causal effects are the same for all views.
 
 ```r
 fit <- zentangler(mae, x_var = "X", y_var = "Y",
-                  a_stage_model = c(species = "maaslin2", kos = "maaslin2", metabolites = "lm"),
-                  maaslin2_args = list(random_effects = "SubjectID"))
+                  transform = c(species = "clr"),
+                  a_stage_model = c(species = "tweedieverse", kos = "maaslin2", metabolites = "lm"),
+                  maaslin2_args = list(random_effects = "SubjectID"),
+                  tweedieverse_args = list(random_effects = "SubjectID"))
 ```
+
+Choosing a model per view:
+
+| View type | Suggested A-stage |
+|---|---|
+| skewed, zero-inflated or overdispersed data: counts, relative abundances, raw intensities (taxa, KOs, pathways, metabolites, scRNA-seq) | `"tweedieverse"` |
+| continuous and roughly Gaussian (possibly after `log`), when speed matters | `"lm"` |
+| when you want MaAsLin2's normalization/transform options | `"maaslin2"` |
+
+When models are mixed, compare views by `q_primary` / `p_primary`, not by `a`
+or `a * b`: the A-stage `a` is on each model's own scale (see below). The
+causal-effect columns (`a_effect_model`, `indirect_effect`, NDE/NIE) are
+always re-estimated with linear mediator models and are comparable across
+views. With `fdr_scope = "global"` (default) the p-values of all views are
+pooled in one FDR step, so every model used should be calibrated;
+`fdr_scope = "within_view"` keeps each view's FDR separate.
 
 In the sequential model only the first route layer has an A-path, so only its
 entry is used (`fit$settings$a_stage_model_layer1`). The model used for each
@@ -166,6 +187,69 @@ fit <- zentangler(mae, x_var = "X", y_var = "Y", covariates = "age",
                                        analysis_method = "LM",
                                        output = "maaslin2_out"))
 ```
+
+### Tweedieverse A-stage
+
+`a_stage_model = "tweedieverse"` fits per-feature Tweedie GLMs with
+`Tweedieverse::Tweedieverse()`: `M_j ~ X + covariates` (+ random effects).
+Tweedieverse is technology-agnostic: counts, relative abundances and
+continuous data (e.g. metabolite or protein intensities), with or without
+excess zeros, are all handled by estimating the Tweedie index per feature, so
+zeros, skewness and overdispersion are modelled directly, without a
+pseudocount.
+
+- It always runs on the **untransformed** values of the view. You can still
+  set `transform = "clr"` or `"log"` for that view: the transformed values are
+  used by the outcome model and the causal effects, the raw values by
+  Tweedieverse.
+- For non-negative data it uses the compound Poisson range (`1 < p < 2`) with
+  a log link, so `a` is a **log fold change per unit of the exposure**, and
+  screening by `sis_rank = "abs_a"` uses `|a| * sd(X)`. Data with negative
+  values (already log-scaled or centred) are fitted with the Gaussian case
+  (`p = 0`, identity link), as in Tweedieverse itself.
+- The default offset follows Tweedieverse's `domain` (`"microbiome"`: TSS).
+  For non-microbiome data set it explicitly, e.g.
+  `tweedieverse_args = list(metabolites = list(domain = "custom"))` (median
+  scaling) or `list(adjust_offset = FALSE)`.
+- `tweedieverse_args` is passed straight through (`random_effects`,
+  `normalization`, `domain`, `adjust_offset`, `scale_factor`, `tweedie_p`,
+  `link`, `reference`, `BPPARAM`, `output`, ...); unknown names are rejected.
+  Like `maaslin2_args`, it is one shared list or a list named by view.
+  Zentangler adds the exposure and covariates to `fixed_effects`, and its
+  defaults turn off Tweedieverse's prevalence/abundance filtering, metadata
+  standardization, plots and file output. The default offset is
+  Tweedieverse's (`domain = "microbiome"`: TSS).
+- Features whose fit fails are untested (`p_a = NA`) and are reported in a
+  warning. The estimated Tweedie index of each feature is in
+  `fit$views$<view>$tweedie_index`.
+- Speed: per-feature Tweedie fits are much slower than `lm`, and the pipeline
+  bootstrap repeats them in every replicate. Pass `tweedieverse_args =
+  list(BPPARAM = BiocParallel::MulticoreParam(4))` to parallelize, or prefer
+  `b_inference = "debiased"` for large views.
+
+- Calibration: the HDMT FDR step relies on valid `p_a`. Tweedie p-values are
+  well calibrated in moderate to large samples, but can be somewhat
+  anti-conservative, with more failed fits, in small samples (around 100 or
+  fewer). There, prefer `fdr_scope = "within_view"` (so the Tweedieverse view cannot
+  inflate the FDR of the other views), or `"lm"` on a `clr` view, and check
+  results with `run_negative_controls()`.
+
+### HPC scripts
+
+The grid builders in `inst/scripts` take the A-stage options as one value or
+a per-view spec, written to the grid and read by the task runners:
+
+```sh
+Rscript inst/scripts/make_parallel_hpc_grid.R --manifest manifest.csv --out grid.csv \
+  --outcomes Y --x-var X --covariates age \
+  --a-stage-model "species=tweedieverse;metabolites=lm" \
+  --transform "species=clr" --a-stage-random-effects SubjectID
+```
+
+`make_sequential_hpc_grid.R` takes the same options (only the first route
+layer's A-stage model is used). `--a-stage-random-effects` is passed to every
+MaAsLin2 / Tweedieverse view. The negative-control grid builders carry these
+columns through.
 
 ### Outcomes
 

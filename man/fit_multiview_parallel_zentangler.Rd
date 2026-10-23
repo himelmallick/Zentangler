@@ -29,6 +29,7 @@ fit_multiview_parallel_zentangler(
   fill_nonfinite_zero = FALSE,
   a_stage_model = "lm",
   maaslin2_args = list(),
+  tweedieverse_args = list(),
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -96,10 +97,18 @@ primary sample: \code{"mean"} or \code{"first"}.}
 
 \item{fill_nonfinite_zero}{Replace non-finite assay values by 0.}
 
-\item{a_stage_model}{A-path (exposure -> mediator) model: \code{"lm"} or
-\code{"maaslin2"}. One value applies to every view; a vector named by view sets
-each view, e.g. \code{c(species = "maaslin2", metabolites = "lm")} (views not
-named use \code{"lm"}). Only the A-stage is affected.}
+\item{a_stage_model}{A-path (exposure -> mediator) model: \code{"lm"},
+\code{"maaslin2"} or \code{"tweedieverse"}. One value applies to every view; a
+vector named by view sets each view, e.g.
+\code{c(species = "tweedieverse", metabolites = "lm")} (views not named use
+\code{"lm"}). Only the A-stage (screening and \code{p_a}) is affected; the B-path
+and causal effects always use the (transformed) feature scale.
+\code{"tweedieverse"} fits per-feature Tweedie GLMs to the untransformed
+values of the view (even when \code{transform} is \code{"log"} or \code{"clr"}): counts,
+relative abundances or continuous data, zero-inflated or not. For
+non-negative data \code{a} is a log fold change per unit of the exposure;
+data with negative values are fitted with the Gaussian case (\code{p = 0},
+identity link).}
 
 \item{maaslin2_args}{Arguments passed to \code{Maaslin2::Maaslin2()} for the
 MaAsLin2 views: any of its arguments (e.g. \code{random_effects},
@@ -110,6 +119,15 @@ or a list named by view whose elements are such lists, e.g.
 Zentangler supplies the data and adds the exposure and covariates to
 \code{fixed_effects}; its own defaults are no normalization/transformation, LM,
 and no prevalence/abundance filtering.}
+
+\item{tweedieverse_args}{Arguments passed to \code{Tweedieverse::Tweedieverse()}
+for the Tweedieverse views (e.g. \code{random_effects}, \code{normalization},
+\code{domain}, \code{adjust_offset}, \code{tweedie_p}, \code{link}, \code{reference}, \code{BPPARAM},
+\code{output}); one shared list or a list named by view, as for
+\code{maaslin2_args}. Zentangler supplies the data and adds the exposure and
+covariates to \code{fixed_effects}; its own defaults turn off Tweedieverse's
+prevalence/abundance filtering, metadata standardization, plots and
+file output.}
 
 \item{sis_n}{Mediators kept per view by the screen (default \code{n / log(n)}).}
 

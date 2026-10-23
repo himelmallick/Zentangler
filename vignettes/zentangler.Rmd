@@ -349,7 +349,7 @@ The coefficient `a_jk` is the A-path estimate, stored in column `a`. The
 p-value testing whether `a_jk = 0` is stored as `p_a`. Covariates are adjusted
 for in every model (A-path, outcome model and causal-effect models).
 
-Zentangler currently provides two A-stage options.
+Zentangler provides three A-stage options, chosen per view with `a_stage_model`.
 
 ## HIMA-like linear A-stage
 
@@ -398,6 +398,38 @@ supplies the data, adds the exposure and covariates to `fixed_effects`, and
 defaults to no normalization or transformation, LM, and no prevalence or
 abundance filtering. MaAsLin2's own `transform` is separate from Zentangler's
 `transform` argument; use one or the other, not both.
+
+## Tweedieverse A-stage
+
+This chunk is not run; it shows the call for an MAE with a `species` count
+view.
+
+```{r, eval = FALSE}
+if (requireNamespace("Tweedieverse", quietly = TRUE)) {
+  fit_tweedie <- fit_multiview_parallel_zentangler(
+    mae = microbiome_mae,
+    x_var = "X",
+    y_var = "Y",
+    transform = c(species = "clr"),
+    a_stage_model = c(species = "tweedieverse", metabolites = "lm"),
+    tweedieverse_args = list(random_effects = "SubjectID"),
+    sis_n = 25
+  )
+}
+```
+
+`"tweedieverse"` fits per-feature Tweedie GLMs (`Tweedieverse::Tweedieverse()`)
+to the untransformed values of a view: counts, relative abundances or
+continuous data such as metabolite intensities, with or without excess zeros.
+It models zeros, skewness and overdispersion without a pseudocount; data with
+negative values are fitted with the Gaussian case (`p = 0`).
+The view's `transform` (here CLR) is still used by the outcome model and the
+causal effects; Tweedieverse only supplies screening and `p_a`, and for
+non-negative data its `a` is a log fold change per unit of `X`. `tweedieverse_args` is passed straight to
+`Tweedieverse()` (one list, or a list per view). Install it with
+`remotes::install_github("himelmallick/Tweedieverse")`. In small samples its
+p-values can be somewhat anti-conservative, so prefer
+`fdr_scope = "within_view"` or `"lm"` there.
 
 # Stage 2: Screening
 

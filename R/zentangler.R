@@ -13,7 +13,7 @@
 #   00-utils.R             validation, study design, sample alignment, FDR (HDMT-style)
 #   01-mae-input.R         MultiAssayExperiment extraction, log / CLR transforms
 #   02-results.R           accessors, summary() and print() methods
-#   03-a-stage-screening.R A-path estimation and SIS / MaAsLin2 screening
+#   03-a-stage-screening.R A-path estimation and SIS / MaAsLin2 / Tweedieverse screening
 #   04-y-stage-fusion.R    outcome model: multiview cooperative learning (main,
 #                          rho in [0, 1]); IntegratedLearner-style fusion (supplementary)
 #   05-b-path-inference.R  de-biased B-path inference, mediator tables

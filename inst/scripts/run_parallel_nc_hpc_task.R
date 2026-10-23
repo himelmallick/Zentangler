@@ -106,6 +106,31 @@ split_arg <- function(x) {
   out[nzchar(out)]
 }
 
+# Per-view specs in grid cells: "lm" (all views) or "species=tweedieverse;metabolites=lm".
+parse_view_spec <- function(x, default = NULL) {
+  if (is.null(x) || length(x) == 0L || is.na(x) || !nzchar(trimws(as.character(x)))) return(default)
+  parts <- trimws(strsplit(as.character(x), ";", fixed = TRUE)[[1]])
+  parts <- parts[nzchar(parts)]
+  if (length(parts) == 1L && !grepl("=", parts)) return(parts)
+  kv <- strsplit(parts, "=", fixed = TRUE)
+  stats::setNames(vapply(kv, function(p) trimws(p[[2]]), character(1)), vapply(kv, function(p) trimws(p[[1]]), character(1)))
+}
+
+# A-stage settings from the grid row: model per view, transform per view and
+# random effects shared by the MaAsLin2 / Tweedieverse views.
+a_stage_settings <- function(row) {
+  model <- parse_view_spec(row_value(row, "a_stage_model", "lm"), "lm")
+  re <- split_arg(row_value(row, "a_stage_random_effects", ""))
+  method_args <- if (length(re)) list(random_effects = re) else list()
+  list(
+    a_stage_model = model,
+    transform = parse_view_spec(row_value(row, "transform", "none"), "none"),
+    maaslin2_args = if (any(model == "maaslin2")) method_args else list(),
+    tweedieverse_args = if (any(model == "tweedieverse")) method_args else list(),
+    label = as.character(row_value(row, "a_stage_model", "lm"))
+  )
+}
+
 args <- parse_args(commandArgs(trailingOnly = TRUE))
 if (is.null(args$grid)) stop("Missing --grid", call. = FALSE)
 if (is.null(args$`task-id`)) stop("Missing --task-id", call. = FALSE)
@@ -160,7 +185,7 @@ n_active_mediators <- as.integer(row_value(row, "n_active_mediators", NA))
 x_var <- as.character(row_value(row, "x_var", "treatment_any"))
 y_family <- as.character(row_value(row, "y_family", "gaussian"))
 covars <- split_arg(row_value(row, "covariates", ""))
-a_stage_model <- as.character(row_value(row, "a_stage_model", "lm"))
+a_stage <- a_stage_settings(row)
 screen_method <- as.character(row_value(row, "screen_method", "sis"))
 lambda_choice <- as.character(row_value(row, "lambda_choice", "lambda.min"))
 b_inference <- as.character(row_value(row, "b_inference", "debiased"))
@@ -207,7 +232,10 @@ fit <- run_negative_controls(
   seed = seed,
   y_family = y_family,
   covariates = covars,
-  a_stage_model = a_stage_model,
+  transform = a_stage$transform,
+  a_stage_model = a_stage$a_stage_model,
+  maaslin2_args = a_stage$maaslin2_args,
+  tweedieverse_args = a_stage$tweedieverse_args,
   screen_method = screen_method,
   sis_n = sis_n,
   glmnet_alpha = glmnet_alpha,

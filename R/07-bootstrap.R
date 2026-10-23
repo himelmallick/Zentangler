@@ -190,18 +190,8 @@ bootstrap_multiview_fit <- function(blocks, pheno_df, opts, key_ref, bootstrap_r
     }
     o_b <- rep_opts
     o_b$seed <- bootstrap_seed + b
-    # Write each replicate's MaAsLin2 output to its own folder.
-    if (!is.null(o_b$a_stage)) {
-      for (v in names(o_b$a_stage$maaslin2_args)) {
-        ma <- o_b$a_stage$maaslin2_args[[v]]
-        base_out <- ma$output %||% ma$output_dir
-        if (!is.null(base_out) && nzchar(base_out)) {
-          ma$output_dir <- NULL
-          ma$output <- file.path(base_out, paste0("bootstrap_", b))
-          o_b$a_stage$maaslin2_args[[v]] <- ma
-        }
-      }
-    }
+    # Write each replicate's MaAsLin2 / Tweedieverse output to its own folder.
+    o_b$a_stage <- zentangler_a_stage_bootstrap_dirs(o_b$a_stage, b)
     fit_b <- try(
       suppressMessages(suppressWarnings(zentangler_with_fold_groups(
         bt$fold_group,

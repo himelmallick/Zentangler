@@ -84,7 +84,12 @@ lambda_choice <- if (!is.null(args$`lambda-choice`)) as.character(args$`lambda-c
 b_inference <- if (!is.null(args$`b-inference`)) as.character(args$`b-inference`) else "debiased"
 # Legacy B-path inference names all map to the single de-biased estimator.
 if (b_inference %in% c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit")) b_inference <- "debiased"
-a_stage_model <- "lm"
+# A-stage model and transform: one value for all views or a per-view spec,
+# e.g. --a-stage-model "species=tweedieverse;metabolites=lm"
+#      --transform "species=clr" --a-stage-random-effects SubjectID
+a_stage_model <- if (!is.null(args$`a-stage-model`)) as.character(args$`a-stage-model`) else "lm"
+transform <- if (!is.null(args$transform)) as.character(args$transform) else "none"
+a_stage_random_effects <- paste(split_arg(args$`a-stage-random-effects`), collapse = ",")
 
 # Method presets were removed from Zentangler; --method-preset is translated
 # here into the explicit options it implied (written as grid columns).
@@ -141,6 +146,8 @@ grid$y_family <- y_family
 grid$covariates <- covariates
 grid$screen_method <- screen_method
 grid$a_stage_model <- a_stage_model
+grid$transform <- transform
+grid$a_stage_random_effects <- a_stage_random_effects
 grid$lambda_choice <- lambda_choice
 grid$b_inference <- b_inference
 grid$fdr_method <- fdr_method
@@ -149,7 +156,7 @@ grid$job_id <- seq_len(nrow(grid))
 grid <- grid[, c(
   "job_id", "mae", "mae_file", "exposure_mode", "exposure_label",
   "x_var", "outcome", "y_family",
-  "covariates", "a_stage_model", "screen_method", "sis_n",
+  "covariates", "a_stage_model", "transform", "a_stage_random_effects", "screen_method", "sis_n",
   "glmnet_alpha", "lambda_choice", "fusion_mode", "b_inference",
   "fdr_method", "fdr_scope"
 ), drop = FALSE]

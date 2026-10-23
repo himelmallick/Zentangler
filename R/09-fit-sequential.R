@@ -263,10 +263,11 @@ zentangler_sequential_core <- function(
 
   # 1. Layer-1 screen.
   v1 <- route[[1L]]
-  # Only layer 1 has an A-path; its model may be "lm" or "maaslin2".
+  # Only layer 1 has an A-path; its model may be "lm", "maaslin2" or "tweedieverse".
   screen1 <- zentangler_a_stage_screen(
     view = v1, M = data_by_view[[v1]], X = X, C = C, pheno_df = pheno_df, x_var = x_var, covariates = covariates,
     model = a_stage$model[[v1]] %||% "lm", maaslin2_args = a_stage$maaslin2_args[[v1]] %||% list(),
+    tweedieverse_args = a_stage$tweedieverse_args[[v1]] %||% list(), M_raw = data_by_view[[zentangler_raw_key(v1)]],
     sis_n = sis_n, rank_by = sis_rank, screen_method = screen_method, fdr_method = fdr_method
   )
   a_lookup <- data.frame(
@@ -494,8 +495,9 @@ zentangler_sequential_core <- function(
 #'   transformation and pseudocount (see [fit_multiview_parallel_zentangler()]).
 #' @param duplicate_primary,fill_nonfinite_zero MAE extraction options.
 #' @param sis_n,sis_rank,screen_method First-layer screen.
-#' @param a_stage_model,maaslin2_args A-path model for the first layer (the
-#'   only layer with an exposure -> mediator path): `"lm"` or `"maaslin2"`,
+#' @param a_stage_model,maaslin2_args,tweedieverse_args A-path model for the
+#'   first layer (the only layer with an exposure -> mediator path): `"lm"`,
+#'   `"maaslin2"` or `"tweedieverse"`, with its argument lists,
 #'   given once or named by view as in [fit_multiview_parallel_zentangler()];
 #'   entries for other route views are accepted and ignored.
 #' @param cor_method,min_abs_cor,cor_q_threshold,cor_fdr_method,residualize_links
@@ -540,6 +542,7 @@ fit_sequential_zentangler <- function(
   fill_nonfinite_zero = FALSE,
   a_stage_model = "lm",
   maaslin2_args = list(),
+  tweedieverse_args = list(),
   sis_n = 50L,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -611,12 +614,23 @@ fit_sequential_zentangler <- function(
     transform = transform, pseudocount = pseudocount
   )
   route <- inputs$view_map$view[match(route_exp, inputs$view_map$experiment_name)]
-  a_stage <- zentangler_resolve_a_stage(a_stage_model, maaslin2_args, route, inputs$view_map)
-  if (!identical(a_stage$model[[route[[1L]]]], "maaslin2")) a_stage$random_effects <- character(0)
+  a_stage <- zentangler_resolve_a_stage(a_stage_model, maaslin2_args, route, inputs$view_map, tweedieverse_args)
+  v1 <- route[[1L]]
+  model1 <- a_stage$model[[v1]]
+  a_stage$random_effects <- switch(model1,
+    maaslin2 = as.character(a_stage$maaslin2_args[[v1]]$random_effects %||% character(0)),
+    tweedieverse = as.character(c(a_stage$tweedieverse_args[[v1]]$random_effects, a_stage$tweedieverse_args[[v1]]$scale_factor) %||% character(0)),
+    character(0)
+  )
 
   needed <- unique(c(x_var, o$y_var, o$survival_time_var, o$survival_event_var, covariates, bootstrap_id, a_stage$random_effects))
   al <- align_samples_multiview_blocks(inputs$blocks, inputs$pheno_df, needed_pheno_cols = needed)
   blocks <- al$blocks
+  if (identical(model1, "tweedieverse") && !is.null(inputs$raw_blocks[[v1]])) {
+    # Raw layer-1 values for the Tweedieverse A-stage, carried in the blocks
+    # list so bootstrap resampling keeps them aligned.
+    blocks[[zentangler_raw_key(v1)]] <- zentangler_align_raw_blocks(inputs$raw_blocks[v1], blocks)[[v1]]
+  }
   pheno_df <- al$pheno
   X <- pheno_df[[x_var]]
   if (!is.numeric(X)) stop("x_var must be numeric.", call. = FALSE)
@@ -779,10 +793,7 @@ zentangler_bootstrap_sequential_pipeline <- function(blocks, pheno_df, X, Y, C, 
     }
     idx <- bt$idx
     args_b <- core_args
-    for (v in names(args_b$a_stage$maaslin2_args)) {
-      base_out <- args_b$a_stage$maaslin2_args[[v]]$output
-      if (!is.null(base_out) && nzchar(base_out)) args_b$a_stage$maaslin2_args[[v]]$output <- file.path(base_out, paste0("bootstrap_", b))
-    }
+    args_b$a_stage <- zentangler_a_stage_bootstrap_dirs(args_b$a_stage, b)
     core_b <- try(suppressWarnings(zentangler_with_fold_groups(bt$fold_group, do.call(
       zentangler_sequential_core,
       c(list(

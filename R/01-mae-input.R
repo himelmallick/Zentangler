@@ -242,6 +242,7 @@ zentangler_mae_to_blocks <- function(
   transform_by_view <- zentangler_per_view(rename(transform), view_names, "none", "transform")
   pseudo_by_view <- zentangler_per_view(rename(pseudocount), view_names, NULL, "pseudocount")
   view_map$transform <- vapply(view_names, function(v) as.character(transform_by_view[[v]]), character(1))
+  raw_blocks <- list()
 
   for (i in seq_along(view_names)) {
     an <- assay_names[[view_names[i]]]
@@ -253,6 +254,9 @@ zentangler_mae_to_blocks <- function(
       duplicate_primary = duplicate_primary,
       fill_nonfinite_zero = fill_nonfinite_zero
     )
+    # Untransformed values are kept for transformed views: count-model A-stages
+    # (Tweedieverse) need the raw counts.
+    if (!identical(as.character(transform_by_view[[view_names[i]]]), "none")) raw_blocks[[safe_names[i]]] <- block
     blocks[[safe_names[i]]] <- zentangler_transform_block(
       block,
       method = transform_by_view[[view_names[i]]],
@@ -261,6 +265,6 @@ zentangler_mae_to_blocks <- function(
     )
   }
 
-  list(blocks = blocks, pheno_df = zentangler_mae_coldata(mae), view_map = view_map)
+  list(blocks = blocks, raw_blocks = raw_blocks, pheno_df = zentangler_mae_coldata(mae), view_map = view_map)
 }
 

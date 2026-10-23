@@ -1,8 +1,8 @@
 # Shared utilities: validation, study design, sample alignment, FDR.
 #
 # Method overview (see zentangler.R for the file map):
-# - A-stage: M_j ~ X + C for every feature (lm), or MaAsLin2 with any of its
-#   options through maaslin2_args.
+# - A-stage: M_j ~ X + C for every feature (lm), or MaAsLin2 / Tweedieverse
+#   with any of their options through maaslin2_args / tweedieverse_args.
 # - Screen: top sis_n features per view by standardized |a| (or p-value).
 # - Outcome model: multiview cooperative learning, rho tuned in [0, 1]
 #   (0 = early, 1 = late fusion); IntegratedLearner-style early/late fusion is

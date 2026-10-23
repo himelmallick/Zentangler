@@ -22,8 +22,8 @@ missing_needed <- setdiff(needed, colnames(grid))
 if (length(missing_needed) > 0L) {
   stop("Best-results table is missing columns: ", paste(missing_needed, collapse = ", "), call. = FALSE)
 }
-# Carry the A-stage model through when present (grids written after presets were removed).
-grid <- grid[, c(needed, intersect("a_stage_model", colnames(grid))), drop = FALSE]
+# Carry the A-stage settings through when present (grids written after presets were removed).
+grid <- grid[, c(needed, intersect(c("a_stage_model", "transform", "a_stage_random_effects"), colnames(grid))), drop = FALSE]
 # Legacy B-path inference names all map to the single de-biased estimator.
 grid$b_inference[grid$b_inference %in% c("debiased_lasso", "debiased_logistic_lasso", "debiased_cox_lasso", "refit")] <- "debiased"
 grid$job_id <- seq_len(nrow(grid))

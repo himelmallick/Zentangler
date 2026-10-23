@@ -20,6 +20,7 @@ fit_sequential_zentangler(
   fill_nonfinite_zero = FALSE,
   a_stage_model = "lm",
   maaslin2_args = list(),
+  tweedieverse_args = list(),
   sis_n = 50L,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -74,8 +75,9 @@ transformation and pseudocount (see \code{\link[=fit_multiview_parallel_zentangl
 
 \item{duplicate_primary, fill_nonfinite_zero}{MAE extraction options.}
 
-\item{a_stage_model, maaslin2_args}{A-path model for the first layer (the
-only layer with an exposure -> mediator path): \code{"lm"} or \code{"maaslin2"},
+\item{a_stage_model, maaslin2_args, tweedieverse_args}{A-path model for the
+first layer (the only layer with an exposure -> mediator path): \code{"lm"},
+\code{"maaslin2"} or \code{"tweedieverse"}, with its argument lists,
 given once or named by view as in \code{\link[=fit_multiview_parallel_zentangler]{fit_multiview_parallel_zentangler()}};
 entries for other route views are accepted and ignored.}
 

@@ -52,6 +52,7 @@ zentangler_parallel_options <- function(a) {
   o$bootstrap_repeats <- max(0L, as.integer(a$bootstrap_repeats))
   o$debias_max_targets <- max(1L, as.integer(a$debias_max_targets))
   o$maaslin2_args <- as.list(a$maaslin2_args %||% list())
+  o$tweedieverse_args <- as.list(a$tweedieverse_args %||% list())
   if (identical(o$y_family, "survival")) {
     o$survival_time_var <- zentangler_require_string(a$survival_time_var, "survival_time_var (y_family = 'survival')")
     o$survival_event_var <- zentangler_require_string(a$survival_event_var, "survival_event_var (y_family = 'survival')")
@@ -106,10 +107,18 @@ zentangler_parallel_options <- function(a) {
 #'   `c(species = "clr", metabolites = "log")`.
 #' @param pseudocount Pseudocount for `"log"` / `"clr"` (single value or named
 #'   by view); default half the smallest positive value of each view.
-#' @param a_stage_model A-path (exposure -> mediator) model: `"lm"` or
-#'   `"maaslin2"`. One value applies to every view; a vector named by view sets
-#'   each view, e.g. `c(species = "maaslin2", metabolites = "lm")` (views not
-#'   named use `"lm"`). Only the A-stage is affected.
+#' @param a_stage_model A-path (exposure -> mediator) model: `"lm"`,
+#'   `"maaslin2"` or `"tweedieverse"`. One value applies to every view; a
+#'   vector named by view sets each view, e.g.
+#'   `c(species = "tweedieverse", metabolites = "lm")` (views not named use
+#'   `"lm"`). Only the A-stage (screening and `p_a`) is affected; the B-path
+#'   and causal effects always use the (transformed) feature scale.
+#'   `"tweedieverse"` fits per-feature Tweedie GLMs to the untransformed
+#'   values of the view (even when `transform` is `"log"` or `"clr"`): counts,
+#'   relative abundances or continuous data, zero-inflated or not. For
+#'   non-negative data `a` is a log fold change per unit of the exposure;
+#'   data with negative values are fitted with the Gaussian case (`p = 0`,
+#'   identity link).
 #' @param maaslin2_args Arguments passed to `Maaslin2::Maaslin2()` for the
 #'   MaAsLin2 views: any of its arguments (e.g. `random_effects`,
 #'   `normalization`, `transform`, `analysis_method`, `reference`,
@@ -119,6 +128,14 @@ zentangler_parallel_options <- function(a) {
 #'   Zentangler supplies the data and adds the exposure and covariates to
 #'   `fixed_effects`; its own defaults are no normalization/transformation, LM,
 #'   and no prevalence/abundance filtering.
+#' @param tweedieverse_args Arguments passed to `Tweedieverse::Tweedieverse()`
+#'   for the Tweedieverse views (e.g. `random_effects`, `normalization`,
+#'   `domain`, `adjust_offset`, `tweedie_p`, `link`, `reference`, `BPPARAM`,
+#'   `output`); one shared list or a list named by view, as for
+#'   `maaslin2_args`. Zentangler supplies the data and adds the exposure and
+#'   covariates to `fixed_effects`; its own defaults turn off Tweedieverse's
+#'   prevalence/abundance filtering, metadata standardization, plots and
+#'   file output.
 #' @param sis_n Mediators kept per view by the screen (default `n / log(n)`).
 #' @param sis_rank Screen ranking: standardized `|a|` (`"abs_a"`) or `"pvalue"`.
 #' @param screen_method `"sis"` or `"none"`.
@@ -180,6 +197,7 @@ fit_multiview_parallel_zentangler <- function(
   fill_nonfinite_zero = FALSE,
   a_stage_model = "lm",
   maaslin2_args = list(),
+  tweedieverse_args = list(),
   sis_n = NULL,
   sis_rank = c("abs_a", "pvalue"),
   screen_method = c("sis", "none"),
@@ -218,7 +236,7 @@ fit_multiview_parallel_zentangler <- function(
     transform = transform,
     pseudocount = pseudocount
   )
-  opts$a_stage <- zentangler_resolve_a_stage(opts$a_stage_model, opts$maaslin2_args, names(inputs$blocks), inputs$view_map)
+  opts$a_stage <- zentangler_resolve_a_stage(opts$a_stage_model, opts$maaslin2_args, names(inputs$blocks), inputs$view_map, opts$tweedieverse_args)
   if (isTRUE(verbose)) {
     zentangler_log(TRUE, "Parallel mediation: ", length(inputs$blocks), " view(s) from the MultiAssayExperiment.")
     tr <- inputs$view_map$transform
@@ -226,7 +244,8 @@ fit_multiview_parallel_zentangler <- function(
       zentangler_log(TRUE, "Transforms: ", paste(paste0(inputs$view_map$view, " = ", tr)[tr != "none"], collapse = ", "), indent = 1L)
     }
   }
-  fit <- zentangler_muffle_cox_ties(zentangler_parallel_engine(inputs$blocks, inputs$pheno_df, opts))
+  blocks <- zentangler_attach_raw_blocks(inputs$blocks, inputs$raw_blocks, opts$a_stage)
+  fit <- zentangler_muffle_cox_ties(zentangler_parallel_engine(blocks, inputs$pheno_df, opts))
   fit$settings$mae_view_map <- inputs$view_map
   fit
 }
@@ -250,8 +269,10 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
   covariates <- design$covariates
 
   needed <- unique(c(x_var, o$y_var, o$survival_time_var, o$survival_event_var, covariates, o$bootstrap_id, o$a_stage$random_effects))
-  al <- align_samples_multiview_blocks(blocks, design$pheno_df, needed_pheno_cols = needed)
+  sp <- zentangler_split_raw_blocks(blocks)
+  al <- align_samples_multiview_blocks(sp$blocks, design$pheno_df, needed_pheno_cols = needed)
   B <- al$blocks
+  B_raw <- zentangler_align_raw_blocks(sp$raw, B)
   views <- names(B)
   X <- al$pheno[[x_var]]
   Y <- zentangler_make_outcome(al$pheno, o)
@@ -272,11 +293,12 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
   zentangler_log_exposure_outcome(verbose, exposure_outcome)
 
   # A-stage and screening.
-  a_stage <- o$a_stage %||% zentangler_resolve_a_stage(o$a_stage_model, o$maaslin2_args, views)
+  a_stage <- o$a_stage %||% zentangler_resolve_a_stage(o$a_stage_model, o$maaslin2_args, views, tweedieverse_args = o$tweedieverse_args)
   screens <- lapply(views, function(v) {
     zentangler_a_stage_screen(
       view = v, M = B[[v]], X = X, C = C, pheno_df = al$pheno, x_var = x_var, covariates = covariates,
       model = a_stage$model[[v]], maaslin2_args = a_stage$maaslin2_args[[v]],
+      tweedieverse_args = a_stage$tweedieverse_args[[v]], M_raw = B_raw[[v]],
       sis_n = o$sis_n, rank_by = o$sis_rank, screen_method = o$screen_method, fdr_method = o$fdr_method
     )
   })
@@ -353,7 +375,7 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
     zentangler_log(verbose, sprintf("Pipeline bootstrap: %d replicates (rho fixed at %s) ...", o$bootstrap_repeats, format(yfit$rho %||% NA)))
     boot <- bootstrap_multiview_fit(
       verbose = verbose,
-      blocks = B, pheno_df = al$pheno, opts = rep_opts,
+      blocks = zentangler_attach_raw_blocks(B, B_raw, o$a_stage %||% a_stage), pheno_df = al$pheno, opts = rep_opts,
       key_ref = paste(tab$omics, tab$mediator, sep = "::"),
       bootstrap_repeats = o$bootstrap_repeats, bootstrap_seed = o$bootstrap_seed, bootstrap_id = o$bootstrap_id
     )
@@ -430,7 +452,7 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
       n_samples_input = nrow(pheno_df),
       n_samples = length(al$sample_ids),
       sample_ids = al$sample_ids,
-      features_before_filtering = vapply(blocks, function(x) ncol(as.data.frame(x)), integer(1)),
+      features_before_filtering = vapply(sp$blocks, function(x) ncol(as.data.frame(x)), integer(1)),
       features_after_filtering = vapply(B, ncol, integer(1)),
       screened_counts = vapply(screens, function(x) length(x$selected), integer(1)),
       y_model_nonzero = vapply(views, function(v) sum(tab$b_fusion[tab$omics == v] != 0), integer(1)),
@@ -441,7 +463,11 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
       bootstrap_failures = c(bootstrap$pipeline$failures, bootstrap$effects$failures)
     ),
     mediators = tab,
-    views = lapply(screens, function(s) list(a_stage_model = s$a_stage_model %||% "lm", screen = s$table, selected = s$selected)),
+    views = lapply(screens, function(s) {
+      v <- list(a_stage_model = s$a_stage_model %||% "lm", screen = s$table, selected = s$selected)
+      if (!is.null(s$tweedie_index)) v$tweedie_index <- s$tweedie_index
+      v
+    }),
     effects = effects,
     bootstrap = if (length(bootstrap) > 0L) bootstrap else NULL,
     model = if (isTRUE(o$return_fits)) yfit else NULL

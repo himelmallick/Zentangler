@@ -43,14 +43,17 @@ zentangler_a_stage_lm <- function(M, X, C = NULL) {
   out
 }
 
-zentangler_screen_order <- function(tab, M, X, rank_by = c("abs_a", "pvalue")) {
+zentangler_screen_order <- function(tab, M, X, rank_by = c("abs_a", "pvalue"), log_link = FALSE) {
   # SIS ranking. "abs_a" ranks by the standardized A-path coefficient
   # |a_j| * sd(X) / sd(M_j), so features measured on large scales do not crowd
-  # out the others. "pvalue" ranks by the A-path p-value.
+  # out the others. For log-link models (Tweedieverse) a_j is already a log
+  # fold change, so the standardized effect is |a_j| * sd(X). "pvalue" ranks by
+  # the A-path p-value.
   rank_by <- match.arg(rank_by)
   if (identical(rank_by, "pvalue")) return(order(tab$p_a, na.last = TRUE))
-  sd_m <- apply(as.matrix(M), 2, stats::sd)
   sd_x <- stats::sd(as.numeric(X))
+  if (isTRUE(log_link)) return(order(abs(tab$a_hat) * sd_x, decreasing = TRUE, na.last = TRUE))
+  sd_m <- apply(as.matrix(M), 2, stats::sd)
   std_a <- abs(tab$a_hat) * sd_x / sd_m[match(tab$mediator, colnames(M))]
   order(std_a, decreasing = TRUE, na.last = TRUE)
 }
@@ -270,12 +273,201 @@ hima_screen_mediators_maaslin2 <- function(
 
 
 # -----------------------------------------------------------------------------
+# Tweedieverse A-stage
+#
+# Per-feature Tweedie GLMs, mediator_j ~ X + covariates (+ random effects), on
+# the untransformed values of the view. Tweedieverse is technology-agnostic:
+# counts, relative abundances and continuous non-negative data (with or without
+# zeros) use the compound Poisson range 1 < p < 2 with a log link; data with
+# negative values resolve to p = 0 (Gaussian, identity link). Only screening
+# and p_a come from this model; the B-path and the causal-effect stage use the
+# (transformed) feature scale, so effects are always re-estimated with linear
+# mediator models.
+# -----------------------------------------------------------------------------
+
+zentangler_tweedieverse_defaults <- function() {
+  # Zentangler's defaults for Tweedieverse::Tweedieverse(); any of them, and any
+  # other Tweedieverse argument, can be overridden through tweedieverse_args.
+  list(
+    output = NULL,
+    abd_threshold = -Inf,
+    prev_threshold = 0,
+    var_threshold = 0,
+    entropy_threshold = 0,
+    max_significance = 1,
+    standardize = FALSE,
+    median_comparison = FALSE,
+    plot_heatmap = FALSE,
+    plot_scatter = FALSE
+  )
+}
+
+hima_screen_mediators_tweedieverse <- function(
+  M,
+  pheno_df,
+  x_var,
+  covariates = NULL,
+  sis_n = NULL,
+  rank_by = c("abs_a", "pvalue"),
+  screen_method = c("sis", "none"),
+  fdr_method = c("BH", "BY"),
+  tweedieverse_args = list(),
+  view = NULL
+) {
+  rank_by <- match.arg(rank_by)
+  screen_method <- match.arg(screen_method)
+  fdr_method <- validate_fdr_method(fdr_method)
+  if (!requireNamespace("Tweedieverse", quietly = TRUE)) {
+    stop("Package 'Tweedieverse' is required when a_stage_model = 'tweedieverse'. ",
+         "Install it with remotes::install_github('himelmallick/Tweedieverse').", call. = FALSE)
+  }
+  M <- as.matrix(M)
+  ids <- rownames(M)
+  if (is.null(ids) || !all(ids %in% rownames(pheno_df))) {
+    stop("Mediator sample IDs must match pheno_df rownames for Tweedieverse screening.", call. = FALSE)
+  }
+  lab <- if (is.null(view)) "" else paste0(" (view '", view, "')")
+  n <- nrow(M)
+  p <- ncol(M)
+
+  user <- as.list(tweedieverse_args %||% list())
+  allowed <- setdiff(names(formals(Tweedieverse::Tweedieverse)), c("input_features", "input_metadata", "assay_name"))
+  unknown <- setdiff(names(user), allowed)
+  if (length(unknown) > 0L) {
+    stop("Unknown Tweedieverse argument(s) in tweedieverse_args: ", paste(unknown, collapse = ", "), call. = FALSE)
+  }
+  random_effects <- unique(as.character(user$random_effects %||% character(0)))
+  fixed_effects <- unique(c(x_var, as.character(user$fixed_effects %||% covariates)))
+  fixed_effects <- c(x_var, setdiff(fixed_effects, c(x_var, random_effects)))
+  extra_cols <- as.character(c(user$scale_factor %||% character(0)))
+  missing_vars <- setdiff(c(fixed_effects, random_effects, extra_cols), colnames(pheno_df))
+  if (length(missing_vars) > 0L) {
+    stop("Missing Tweedieverse metadata columns: ", paste(missing_vars, collapse = ", "), call. = FALSE)
+  }
+  meta_cols <- unique(c(fixed_effects, random_effects, extra_cols))
+  if (!is.null(user$output) && nzchar(user$output)) dir.create(user$output, recursive = TRUE, showWarnings = FALSE)
+
+  call_args <- utils::modifyList(zentangler_tweedieverse_defaults(), user, keep.null = TRUE)
+  meta <- as.data.frame(pheno_df[ids, meta_cols, drop = FALSE], check.names = FALSE, stringsAsFactors = FALSE)
+  call_args$input_features <- SummarizedExperiment::SummarizedExperiment(
+    assays = list(counts = t(M)),
+    colData = meta
+  )
+  call_args$input_metadata <- NULL
+  call_args$assay_name <- "counts"
+  call_args$fixed_effects <- fixed_effects
+  call_args$random_effects <- if (length(random_effects) > 0L) random_effects else NULL
+  call_args$max_significance <- 1  # every feature is needed for screening
+
+  # Tweedieverse logs every feature fit to the console and prints the errors of
+  # failed fits through try(); keep it quiet.
+  res <- NULL
+  null_con <- file(nullfile(), open = "w")
+  old_try <- options(try.outFile = null_con)
+  on.exit({ options(old_try); close(null_con) }, add = TRUE)
+  utils::capture.output(
+    res <- suppressMessages(suppressWarnings(do.call(Tweedieverse::Tweedieverse, call_args))),
+    type = "output"
+  )
+  if (is.null(res) || !is.data.frame(res) || nrow(res) == 0L) stop("Tweedieverse returned no association results", lab, ".", call. = FALSE)
+
+  res_x <- res[as.character(res$metadata) == x_var, , drop = FALSE]
+  tab <- data.frame(mediator = colnames(M), a_hat = NA_real_, p_a = NA_real_, q_a = NA_real_, stringsAsFactors = FALSE)
+  tweedie_index <- setNames(rep(NA_real_, p), colnames(M))
+  if (nrow(res_x) > 0L) {
+    feat <- as.character(res_x$feature)
+    idx <- match(feat, tab$mediator)
+    miss <- is.na(idx)
+    if (any(miss)) idx[miss] <- match(feat[miss], make.names(tab$mediator))
+    keep <- !is.na(idx)
+    tab$a_hat[idx[keep]] <- as.numeric(res_x$coef[keep])
+    tab$p_a[idx[keep]] <- as.numeric(res_x$pval[keep])
+    if ("tweedie.index" %in% colnames(res_x)) tweedie_index[idx[keep]] <- as.numeric(res_x$tweedie.index[keep])
+  }
+  bad <- !is.finite(tab$a_hat) | !is.finite(tab$p_a)
+  tab$a_hat[bad] <- NA_real_
+  tab$p_a[bad] <- NA_real_
+  if (any(bad)) {
+    warning("Tweedieverse A-stage", lab, " returned no estimate for ", sum(bad), " of ", p,
+            " features (fit failures or filtering); they are treated as untested (p_a = NA) and cannot be screened in.", call. = FALSE)
+  }
+  tab$q_a <- p.adjust(tab$p_a, method = fdr_method)
+
+  # With p = 0 (data with negative values, or tweedie_p = 0) Tweedieverse uses
+  # the identity link, so a_j is then on the feature's own scale.
+  p_used <- tweedie_index[is.finite(tweedie_index)]
+  gaussian_p0 <- length(p_used) > 0L && all(p_used == 0)
+  log_link <- !gaussian_p0 && identical(as.character(call_args$link %||% "log"), "log")
+  ord <- zentangler_screen_order(tab, M = M, X = pheno_df[ids, x_var], rank_by = rank_by, log_link = log_link)
+  if (screen_method == "none") {
+    sis_n_used <- p
+    selected <- tab$mediator[is.finite(tab$p_a)]
+  } else {
+    if (is.null(sis_n)) sis_n <- hima_sis_default_n(n = n, p = p)
+    sis_n_used <- max(0L, min(sum(is.finite(tab$p_a)), as.integer(sis_n)))
+    selected <- tab$mediator[ord][seq_len(sis_n_used)]
+  }
+  tab$selected <- tab$mediator %in% selected
+  tab <- tab[order(tab$p_a, na.last = TRUE), ]
+  rownames(tab) <- NULL
+
+  list(
+    table = tab,
+    selected = selected,
+    sis_n = sis_n_used,
+    screen_method = screen_method,
+    a_stage_model = "tweedieverse",
+    a_scale = if (log_link) "log fold change per unit X" else if (gaussian_p0) "identity (Gaussian, p = 0)" else paste0(call_args$link, " link"),
+    tweedie_index = tweedie_index,
+    fixed_effects = fixed_effects,
+    random_effects = random_effects,
+    tweedieverse_args = call_args[setdiff(names(call_args), c("input_features", "input_metadata"))]
+  )
+}
+
+# Raw (untransformed) values travel inside the blocks list under a reserved
+# name so that bootstrap resampling keeps them aligned with the transformed
+# block; the engines split them off before sample alignment.
+zentangler_raw_key <- function(view) if (length(view)) paste0(".raw::", view) else character(0)
+
+zentangler_attach_raw_blocks <- function(blocks, raw_blocks, a_stage) {
+  views <- names(a_stage$model)[a_stage$model == "tweedieverse"]
+  for (v in intersect(views, names(raw_blocks))) blocks[[zentangler_raw_key(v)]] <- raw_blocks[[v]]
+  blocks
+}
+
+zentangler_split_raw_blocks <- function(blocks) {
+  is_raw <- startsWith(names(blocks), ".raw::")
+  raw <- blocks[is_raw]
+  names(raw) <- sub("^\\.raw::", "", names(raw))
+  list(blocks = blocks[!is_raw], raw = raw)
+}
+
+zentangler_align_raw_blocks <- function(raw, B) {
+  # Subset raw values to the aligned samples and retained features of B.
+  out <- list()
+  for (v in intersect(names(raw), names(B))) {
+    R <- as.matrix(raw[[v]])
+    ids <- rownames(B[[v]])
+    cols <- colnames(B[[v]])
+    if (!all(ids %in% rownames(R)) || !all(cols %in% colnames(R))) {
+      stop("Raw values for view '", v, "' do not match the transformed block.", call. = FALSE)
+    }
+    R <- R[ids, cols, drop = FALSE]
+    R[!is.finite(R)] <- NA_real_
+    out[[v]] <- R
+  }
+  out
+}
+
+# -----------------------------------------------------------------------------
 # Per-view A-stage models
 #
-# a_stage_model is either one model for every view ("lm" or "maaslin2") or a
-# vector named by view, e.g. c(species = "maaslin2", metabolites = "lm");
-# views not named fall back to "lm". maaslin2_args is either one list of
-# Maaslin2() arguments shared by every MaAsLin2 view, or a list named by view
+# a_stage_model is either one model for every view ("lm", "maaslin2" or
+# "tweedieverse") or a vector named by view, e.g.
+# c(species = "tweedieverse", metabolites = "lm"); views not named fall back to
+# "lm". maaslin2_args / tweedieverse_args are each either one list of
+# arguments shared by every view using that model, or a list named by view
 # whose elements are such lists. Names may be MAE experiment names or the
 # sanitized view names Zentangler uses internally. This only affects the
 # A-path (exposure -> mediator) stage.
@@ -290,7 +482,23 @@ zentangler_view_name_map <- function(views, view_map = NULL) {
   map
 }
 
-zentangler_resolve_a_stage <- function(a_stage_model, maaslin2_args, views, view_map = NULL) {
+zentangler_a_stage_models <- function() c("lm", "maaslin2", "tweedieverse")
+
+zentangler_resolve_method_args <- function(args, views, name_map, to_view, label) {
+  # One list shared by every view, or a list named by view of such lists.
+  args <- as.list(args %||% list())
+  per_view <- length(args) > 0L && !is.null(names(args)) &&
+    all(names(args) %in% names(name_map)) && all(vapply(args, is.list, logical(1)))
+  out <- setNames(rep(list(list()), length(views)), views)
+  if (per_view) {
+    for (nm in names(args)) out[[to_view(nm, label)]] <- args[[nm]]
+  } else {
+    for (v in views) out[[v]] <- args
+  }
+  out
+}
+
+zentangler_resolve_a_stage <- function(a_stage_model, maaslin2_args, views, view_map = NULL, tweedieverse_args = list()) {
   name_map <- zentangler_view_name_map(views, view_map)
   to_view <- function(nm, label) {
     bad <- setdiff(nm, names(name_map))
@@ -301,30 +509,65 @@ zentangler_resolve_a_stage <- function(a_stage_model, maaslin2_args, views, view
   models <- setNames(rep("lm", length(views)), views)
   if (is.null(names(a_stage_model))) {
     if (length(a_stage_model) != 1L) {
-      stop("a_stage_model must be a single model or a vector named by view, e.g. c(species = 'maaslin2', metabolites = 'lm').", call. = FALSE)
+      stop("a_stage_model must be a single model or a vector named by view, e.g. c(species = 'tweedieverse', metabolites = 'lm').", call. = FALSE)
     }
     models[] <- as.character(a_stage_model)
   } else {
     models[to_view(names(a_stage_model), "a_stage_model")] <- as.character(a_stage_model)
   }
-  bad <- setdiff(unique(models), c("lm", "maaslin2"))
-  if (length(bad) > 0L) stop("Unknown a_stage_model: ", paste(bad, collapse = ", "), ". Use 'lm' or 'maaslin2'.", call. = FALSE)
-
-  maaslin2_args <- as.list(maaslin2_args %||% list())
-  per_view <- length(maaslin2_args) > 0L && !is.null(names(maaslin2_args)) &&
-    all(names(maaslin2_args) %in% names(name_map)) && all(vapply(maaslin2_args, is.list, logical(1)))
-  args_by_view <- setNames(rep(list(list()), length(views)), views)
-  if (per_view) {
-    for (nm in names(maaslin2_args)) args_by_view[[to_view(nm, "maaslin2_args")]] <- maaslin2_args[[nm]]
-  } else {
-    for (v in views) args_by_view[[v]] <- maaslin2_args
+  bad <- setdiff(unique(models), zentangler_a_stage_models())
+  if (length(bad) > 0L) {
+    stop("Unknown a_stage_model: ", paste(bad, collapse = ", "), ". Use ",
+         paste0("'", zentangler_a_stage_models(), "'", collapse = ", "), ".", call. = FALSE)
   }
-  random_effects <- unique(unlist(lapply(views[models == "maaslin2"], function(v) as.character(args_by_view[[v]]$random_effects %||% character(0)))))
-  list(model = models, maaslin2_args = args_by_view, random_effects = random_effects)
+
+  maaslin2_by_view <- zentangler_resolve_method_args(maaslin2_args, views, name_map, to_view, "maaslin2_args")
+  tweedie_by_view <- zentangler_resolve_method_args(tweedieverse_args, views, name_map, to_view, "tweedieverse_args")
+  re_of <- function(v) {
+    switch(models[[v]],
+      maaslin2 = as.character(maaslin2_by_view[[v]]$random_effects %||% character(0)),
+      tweedieverse = as.character(c(tweedie_by_view[[v]]$random_effects, tweedie_by_view[[v]]$scale_factor) %||% character(0)),
+      character(0)
+    )
+  }
+  random_effects <- unique(unlist(lapply(views, re_of)))
+  list(model = models, maaslin2_args = maaslin2_by_view, tweedieverse_args = tweedie_by_view, random_effects = random_effects)
+}
+
+# Point every MaAsLin2 / Tweedieverse output folder of a bootstrap replicate
+# to its own sub-folder.
+zentangler_a_stage_bootstrap_dirs <- function(a_stage, b) {
+  if (is.null(a_stage)) return(a_stage)
+  for (slot in c("maaslin2_args", "tweedieverse_args")) {
+    for (v in names(a_stage[[slot]])) {
+      ma <- a_stage[[slot]][[v]]
+      base_out <- ma$output %||% ma$output_dir
+      if (!is.null(base_out) && nzchar(base_out)) {
+        ma$output_dir <- NULL
+        ma$output <- file.path(base_out, paste0("bootstrap_", b))
+        a_stage[[slot]][[v]] <- ma
+      }
+    }
+  }
+  a_stage
 }
 
 zentangler_a_stage_screen <- function(view, M, X, C, pheno_df, x_var, covariates, model, maaslin2_args,
-                                      sis_n, rank_by, screen_method, fdr_method) {
+                                      sis_n, rank_by, screen_method, fdr_method,
+                                      tweedieverse_args = list(), M_raw = NULL) {
+  if (identical(model, "tweedieverse")) {
+    ta <- tweedieverse_args %||% list()
+    if (!is.null(ta$output) && nzchar(ta$output)) ta$output <- file.path(ta$output, paste0("a_stage_", view))
+    out <- hima_screen_mediators_tweedieverse(
+      M = M_raw %||% M, pheno_df = pheno_df, x_var = x_var, covariates = covariates,
+      sis_n = sis_n, rank_by = rank_by, screen_method = screen_method,
+      fdr_method = fdr_method, tweedieverse_args = ta, view = view
+    )
+    # Keep the table aligned with the (transformed) block used downstream.
+    out$table <- out$table[out$table$mediator %in% colnames(M), , drop = FALSE]
+    out$selected <- intersect(out$selected, colnames(M))
+    return(out)
+  }
   if (identical(model, "maaslin2")) {
     ma <- maaslin2_args
     base_out <- ma$output %||% ma$output_dir
