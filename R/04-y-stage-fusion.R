@@ -119,13 +119,132 @@ fit_y_multiview_glmnet_lasso <- function(
 # refreshed by backfitting after tuning.
 #
 # rho and lambda are tuned jointly by K-fold cross-validation over
-# `rho_grid` (shared folds; deviance for binomial/Cox, MSE for Gaussian).
+# `rho_grid`, following cvar.multiview(): shared folds (stratified by class or
+# event), a full-data lambda path per rho, fold-size-weighted CV mean and SE,
+# lambda.min / lambda.1se per rho, and rho chosen by its CV score at the
+# selected lambda. Scores: MSE (Gaussian), AUC (binomial), held-out partial-
+# likelihood deviance (Cox). The W offset is refitted inside each fold.
 # rho runs from 0 to 1: rho = 0 is early fusion (one lasso over all views),
 # rho = 1 is late-fusion-like (views fitted to agree), and values in between
 # trade the two off. The data choose rho, so no fusion type is fixed a priori.
 # -----------------------------------------------------------------------------
 
 zentangler_default_rho_grid <- function() c(0, 0.2, 0.4, 0.6, 0.8, 1)
+
+# ---- Cross-validation helpers (mirror cvar.multiview) ------------------------
+
+zentangler_default_type_measure <- function(y_family) {
+  switch(y_family, gaussian = "mse", binomial = "auc", survival = "deviance")
+}
+
+zentangler_cv_foldid <- function(Y, y_family, nfolds = 10L) {
+  # Bootstrap replicates keep duplicated rows together (see zentangler_make_foldid).
+  n <- if (inherits(Y, "Surv")) nrow(Y) else length(Y)
+  groups <- getOption("zentangler.fold_groups")
+  if (!is.null(groups) && length(groups) == n) {
+    foldid <- zentangler_make_foldid(n, nfolds)
+  } else if (identical(y_family, "binomial")) {
+    nfolds <- max(3L, min(as.integer(nfolds), n))
+    foldid <- zentangler_stratified_foldid(as.integer(as.numeric(Y) > 0), nfolds)
+  } else if (identical(y_family, "survival")) {
+    events <- as.integer(Y[, 2])
+    if (sum(events) < 3L) stop("Cox cross-validation requires at least 3 observed events.", call. = FALSE)
+    nfolds <- max(2L, min(as.integer(nfolds), sum(events)))
+    foldid <- zentangler_stratified_foldid(events, nfolds)
+  } else {
+    foldid <- zentangler_make_foldid(n, nfolds)
+  }
+  foldid <- match(foldid, sort(unique(foldid)))
+  if (identical(y_family, "binomial")) {
+    y01 <- as.integer(as.numeric(Y) > 0)
+    for (f in unique(foldid)) {
+      if (length(unique(y01[foldid != f])) < 2L) {
+        stop(sprintf("Invalid CV split for binomial: training set in fold %d has only one class. Reduce nfolds.", f), call. = FALSE)
+      }
+    }
+  }
+  foldid
+}
+
+zentangler_stratified_foldid <- function(strata, nfolds) {
+  fid <- integer(length(strata))
+  for (v in unique(strata)) {
+    idx <- which(strata == v)
+    fid[idx] <- sample(rep(seq_len(nfolds), length.out = length(idx)))
+  }
+  fid
+}
+
+zentangler_fold_offset <- function(Y, W, y_family, train) {
+  # Unpenalized Y ~ W fitted on the training rows only, evaluated on all rows.
+  b <- zentangler_unpenalized_fit(zentangler_subset_y(Y, which(train)), W[train, , drop = FALSE], y_family)
+  b$intercept + as.numeric(W %*% b$coef)
+}
+
+zentangler_auc <- function(y01, score) {
+  pos <- y01 == 1
+  n1 <- sum(pos)
+  n0 <- sum(!pos)
+  if (n1 == 0L || n0 == 0L) return(NA_real_)
+  (sum(rank(score)[pos]) - n1 * (n1 + 1) / 2) / (n1 * n0)
+}
+
+zentangler_coxnet_dev <- function(eta, Y) {
+  args <- list(pred = eta, y = Y, std.weights = FALSE)
+  if ("cox.ties" %in% names(formals(glmnet::coxnet.deviance))) args$cox.ties <- "breslow"
+  do.call(glmnet::coxnet.deviance, args)
+}
+
+zentangler_cv_fold_score <- function(Y, eta, test, y_family, type_measure) {
+  # eta: n x nlambda link predictions from the fold model; scores the held-out rows.
+  y_te <- zentangler_subset_y(Y, which(test))
+  eta_te <- eta[test, , drop = FALSE]
+  if (identical(y_family, "survival")) {
+    if (identical(type_measure, "C")) {
+      return(apply(eta_te, 2, function(p) glmnet::Cindex(p, y_te)))
+    }
+    # glmnet-style held-out Cox deviance: full-data minus training deviance.
+    y_tr <- zentangler_subset_y(Y, which(!test))
+    return(vapply(seq_len(ncol(eta)), function(j) {
+      (zentangler_coxnet_dev(eta[, j], Y) - zentangler_coxnet_dev(eta[!test, j], y_tr)) / sum(test)
+    }, numeric(1)))
+  }
+  yv <- as.numeric(y_te)
+  if (identical(y_family, "gaussian")) return(colMeans((yv - eta_te)^2))
+  if (identical(type_measure, "auc")) return(apply(eta_te, 2, function(p) zentangler_auc(yv, p)))
+  apply(eta_te, 2, function(e) {
+    pp <- pmin(pmax(stats::plogis(e), 1e-8), 1 - 1e-8)
+    -2 * mean(yv * log(pp) + (1 - yv) * log(1 - pp))
+  })
+}
+
+zentangler_cv_weighted_summary <- function(cvm, fold_weights) {
+  means <- apply(cvm, 1, function(z) {
+    ok <- is.finite(z)
+    if (!any(ok)) return(NA_real_)
+    stats::weighted.mean(z[ok], fold_weights[ok])
+  })
+  ses <- vapply(seq_len(nrow(cvm)), function(j) {
+    z <- cvm[j, ]
+    ok <- is.finite(z)
+    if (sum(ok) <= 1L) return(NA_real_)
+    sqrt(stats::weighted.mean((z[ok] - means[j])^2, fold_weights[ok]) / (sum(ok) - 1L))
+  }, numeric(1))
+  list(mean = means, se = ses)
+}
+
+zentangler_cv_higher_better <- function(type_measure) type_measure %in% c("auc", "C")
+
+zentangler_cv_best_index <- function(vals, type_measure) {
+  if (zentangler_cv_higher_better(type_measure)) which.max(vals) else which.min(vals)
+}
+
+zentangler_cv_1se <- function(lambda, cvmean, cvse, idx_best, type_measure) {
+  se <- if (is.finite(cvse[idx_best])) cvse[idx_best] else 0
+  eligible <- if (zentangler_cv_higher_better(type_measure)) cvmean >= cvmean[idx_best] - se else cvmean <= cvmean[idx_best] + se
+  max(lambda[which(eligible)], na.rm = TRUE)
+}
+
 
 zentangler_multiview_family <- function(y_family) {
   switch(y_family, gaussian = stats::gaussian(), binomial = stats::binomial(), survival = "cox")
@@ -197,11 +316,15 @@ fit_y_multiview_cooperative <- function(
   rho = NULL,
   rho_grid = zentangler_default_rho_grid(),
   nfolds = 10L,
+  type_measure = NULL,
   backfit_iter = 3L,
   ...
 ) {
   y_family <- match.arg(y_family)
   lambda_choice <- match.arg(lambda_choice)
+  if (is.null(type_measure)) type_measure <- zentangler_default_type_measure(y_family)
+  allowed_tm <- switch(y_family, gaussian = c("mse", "deviance"), binomial = c("auc", "deviance"), survival = c("deviance", "C"))
+  if (!type_measure %in% allowed_tm) stop(sprintf("For y_family = '%s', type_measure must be one of: %s.", y_family, paste(allowed_tm, collapse = ", ")), call. = FALSE)
   if (!requireNamespace("multiview", quietly = TRUE)) {
     stop("Package 'multiview' is required for fusion = 'multiview'. Install it with install.packages('multiview').", call. = FALSE)
   }
@@ -234,50 +357,67 @@ fit_y_multiview_cooperative <- function(
   base <- zentangler_unpenalized_fit(Y, W, y_family)
   offset <- base$intercept + as.numeric(W %*% base$coef)
 
-  foldid <- zentangler_make_foldid(n, nfolds)
-  K <- max(foldid)
+  # ---- rho / lambda tuning: same procedure as cvar.multiview() --------------
+  # Shared folds (stratified by class / event); the exposure-covariate offset is
+  # refitted on the training rows of each fold, so no held-out outcome is used
+  # to build the predictions it is scored on.
+  foldid <- zentangler_cv_foldid(Y, y_family, nfolds)
+  fold_levels <- sort(unique(foldid))
+  K <- length(fold_levels)
+  fold_offsets <- lapply(fold_levels, function(f) zentangler_fold_offset(Y, W, y_family, train = foldid != f))
+  fold_weights <- vapply(fold_levels, function(f) sum(foldid == f), numeric(1))
   cv_tab <- list()
   paths <- list()
   dropped_rho <- numeric(0)
   for (rho_i in rho_grid) {
-    full <- zentangler_multiview_path(x_list, Y, rho_i, y_family, offset, alpha = glmnet_alpha)
-    lam <- full$lambda
-    # Guard against non-converged solution paths (multiview 1.0 Cox fits with
-    # rho > 0 currently stop after a handful of lambdas without converging).
-    if (rho_i > 0 && (isTRUE(attr(full, "zentangler_nonconverged")) || length(lam) < 15L)) {
+    res <- tryCatch({
+      # Lambda path from the full-data fit (as in cvar.multiview).
+      full <- zentangler_multiview_path(x_list, Y, rho_i, y_family, offset, alpha = glmnet_alpha)
+      lam <- full$lambda
+      # Guard against non-converged solution paths (multiview 1.0 Cox fits with
+      # rho > 0 currently stop after a handful of lambdas without converging).
+      if (rho_i > 0 && (isTRUE(attr(full, "zentangler_nonconverged")) || length(lam) < 15L)) {
+        stop("solution path did not converge", call. = FALSE)
+      }
+      cvm <- matrix(NA_real_, nrow = length(lam), ncol = K)
+      for (i in seq_len(K)) {
+        te <- foldid == fold_levels[i]
+        tr <- !te
+        fk <- zentangler_multiview_path(
+          lapply(x_list, function(M) M[tr, , drop = FALSE]), zentangler_subset_y(Y, which(tr)), rho_i,
+          y_family, fold_offsets[[i]][tr], lambda = lam, alpha = glmnet_alpha
+        )
+        eta <- as.matrix(stats::predict(fk, newx = x_list, s = lam, newoffset = fold_offsets[[i]], type = "link"))
+        nl <- min(ncol(eta), length(lam))
+        if (nl < length(lam)) eta <- cbind(eta[, seq_len(nl), drop = FALSE], matrix(eta[, nl], nrow(eta), length(lam) - nl))
+        cvm[, i] <- zentangler_cv_fold_score(Y, eta, te, y_family, type_measure)
+      }
+      smry <- zentangler_cv_weighted_summary(cvm, fold_weights)
+      i_min <- zentangler_cv_best_index(smry$mean, type_measure)
+      lam_min <- lam[i_min]
+      lam_1se <- zentangler_cv_1se(lam, smry$mean, smry$se, i_min, type_measure)
+      lam_choice <- if (identical(lambda_choice, "lambda.min")) lam_min else lam_1se
+      i_choice <- which.min(abs(lam - lam_choice))
+      list(
+        full = full,
+        row = data.frame(
+          rho = rho_i, cv_score = smry$mean[i_choice], cv_se = smry$se[i_choice],
+          cv_min = smry$mean[i_min], lambda.min = lam_min, lambda.1se = lam_1se,
+          type_measure = type_measure, stringsAsFactors = FALSE
+        )
+      )
+    }, error = function(e) e)
+    # As in cvar.multiview: a rho whose full or fold fits fail is skipped.
+    if (inherits(res, "error") || !is.finite(res$row$cv_score)) {
       dropped_rho <- c(dropped_rho, rho_i)
       next
     }
-    err <- matrix(NA_real_, nrow = K, ncol = length(lam))
-    for (k in seq_len(K)) {
-      te <- which(foldid == k)
-      tr <- which(foldid != k)
-      fk <- try(zentangler_multiview_path(
-        lapply(x_list, function(M) M[tr, , drop = FALSE]), zentangler_subset_y(Y, tr), rho_i,
-        y_family, offset[tr], lambda = lam, alpha = glmnet_alpha
-      ), silent = TRUE)
-      if (inherits(fk, "try-error")) next
-      x_te <- lapply(x_list, function(M) M[te, , drop = FALSE])
-      eta <- stats::predict(fk, newx = x_te, s = lam, newoffset = offset[te], type = "link")
-      eta <- as.matrix(eta)
-      for (j in seq_len(min(ncol(eta), length(lam)))) {
-        err[k, j] <- zentangler_cv_loss(zentangler_subset_y(Y, te), eta[, j], y_family)
-      }
-    }
-    cvm <- colMeans(err, na.rm = TRUE)
-    cvsd <- apply(err, 2, stats::sd, na.rm = TRUE) / sqrt(colSums(is.finite(err)))
-    ok <- is.finite(cvm)
-    i_min <- which(ok)[which.min(cvm[ok])]
-    i_1se <- which(ok & cvm <= cvm[i_min] + cvsd[i_min])
-    i_1se <- if (length(i_1se) > 0L) min(i_1se) else i_min
-    cv_tab[[length(cv_tab) + 1L]] <- data.frame(
-      rho = rho_i, cv_min = cvm[i_min], lambda.min = lam[i_min], lambda.1se = lam[i_1se], stringsAsFactors = FALSE
-    )
-    paths[[as.character(rho_i)]] <- full
+    cv_tab[[length(cv_tab) + 1L]] <- res$row
+    paths[[as.character(rho_i)]] <- res$full
   }
   if (length(dropped_rho) > 0L) {
     warning(
-      "multiview did not converge for rho = ", paste(dropped_rho, collapse = ", "),
+      "multiview fitting failed or did not converge for rho = ", paste(dropped_rho, collapse = ", "),
       if (identical(y_family, "survival")) " (known multiview 1.0 issue for Cox models with rho > 0)" else "",
       "; these values were removed from the rho grid.",
       call. = FALSE
@@ -285,7 +425,9 @@ fit_y_multiview_cooperative <- function(
   }
   if (length(cv_tab) == 0L) stop("No rho value produced a converged multiview fit.", call. = FALSE)
   cv_tab <- do.call(rbind, cv_tab)
-  best <- which.min(cv_tab$cv_min)
+  # rho is chosen by its CV score at the selected lambda (lambda_choice),
+  # exactly as cvar.multiview() ranks its (alpha, rho) grid.
+  best <- zentangler_cv_best_index(cv_tab$cv_score, type_measure)
   rho_hat <- cv_tab$rho[best]
   lam_hat <- cv_tab[[lambda_choice]][best]
 

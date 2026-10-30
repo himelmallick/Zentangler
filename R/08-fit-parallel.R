@@ -324,7 +324,7 @@ zentangler_parallel_engine <- function(blocks, pheno_df, opts, skip_effects = FA
   if (verbose) {
     if (!is.null(yfit$fit$cv)) {
       cvt <- yfit$fit$cv
-      zentangler_log(TRUE, sprintf("rho chosen = %g (CV error by rho: %s)", yfit$rho, paste(sprintf("%g:%.4g", cvt$rho, cvt$cv_min), collapse = ", ")), indent = 1L)
+      zentangler_log(TRUE, sprintf("rho chosen = %g (CV %s by rho: %s)", yfit$rho, cvt$type_measure[1] %||% "score", paste(sprintf("%g:%.4g", cvt$rho, cvt$cv_score %||% cvt$cv_min), collapse = ", ")), indent = 1L)
     }
     zentangler_log(TRUE, sprintf("%d of %d screened mediators have non-zero outcome-model coefficients",
                                  sum(vapply(yfit$coef_by_view, function(b) sum(b != 0), numeric(1))),

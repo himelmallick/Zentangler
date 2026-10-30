@@ -68,3 +68,9 @@ retired/
 inst/
 *.pptx
 *.pptx.inspect.ndjson
+
+# ASD experimentation outputs
+ASD_Experimentation/
+
+# Blueberry experimentation outputs
+Blueberry_Experimentation/

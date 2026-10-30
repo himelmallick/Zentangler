@@ -1,6 +1,6 @@
 Package: Zentangler
 Title: Multi-View Mediation Analysis for Multi-Omics Data
-Version: 0.99.0
+Version: 0.99.0.1
 Authors@R: c(
     person("Nalin", "Arora", email = "naa4050@med.cornell.edu", role = "aut"),
     person("Himel", "Mallick", email = "him4004@med.cornell.edu",

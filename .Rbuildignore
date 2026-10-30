@@ -20,3 +20,5 @@
 ^zentangler_simmba_results$
 ^zentangler_intersim_.*[.]csv$
 ^retired$
+^ASD_Experimentation$
+^Blueberry_Experimentation$
